@@ -34,6 +34,41 @@ void drawPieceBits(const GfxRenderer& renderer, const int x, const int y, const 
   }
 }
 
+// Writes a pre-rotated, pre-shifted piece straight into the Portrait framebuffer: the halo mask is
+// OR-ed in (bits set = white), then the ink mask is cleared out (bits clear = black). Returns false
+// when the bitmap for this shift is missing or the box is not fully inside the panel, so the caller
+// can fall back to drawPieceBits().
+bool blitPiece(const GfxRenderer& renderer, const int x, const int y, const uint8_t piece) {
+  if (renderer.getOrientation() != GfxRenderer::Portrait) return false;
+  uint8_t* frameBuffer = renderer.getFrameBuffer();
+  const int panelHeight = renderer.getDisplayHeight();
+  const int widthBytes = renderer.getDisplayWidthBytes();
+  // A tiled grayscale strip redirects drawing to a band buffer; only blit the full framebuffer.
+  if (frameBuffer == nullptr || renderer.getWriteTarget() != frameBuffer || renderer.getWriteRows() != panelHeight) {
+    return false;
+  }
+  if (x < 0 || y < 0) return false;
+
+  const uint8_t* ink = PIECE_INK_SHIFTED[piece & 15][y & 7];
+  const uint8_t* halo = PIECE_HALO_SHIFTED[piece & 15][y & 7];
+  if (ink == nullptr || halo == nullptr) return false;
+
+  // Portrait: phyX = y, phyY = panelHeight - 1 - x.
+  const int firstRow = panelHeight - x - PIECE_SIZE;
+  const int firstByte = y >> 3;
+  if (firstRow < 0 || firstByte + PIECE_SHIFTED_ROW_BYTES > widthBytes) return false;
+
+  for (int row = 0; row < PIECE_SIZE; row++) {
+    uint8_t* dst = frameBuffer + (firstRow + row) * widthBytes + firstByte;
+    const uint8_t* inkRow = ink + row * PIECE_SHIFTED_ROW_BYTES;
+    const uint8_t* haloRow = halo + row * PIECE_SHIFTED_ROW_BYTES;
+    for (int i = 0; i < PIECE_SHIFTED_ROW_BYTES; i++) {
+      dst[i] = static_cast<uint8_t>((dst[i] | haloRow[i]) & ~inkRow[i]);
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 void ChessPuzzleActivity::loadPosition(const int index) {
@@ -121,6 +156,8 @@ void ChessPuzzleActivity::render(RenderLock&&) {
 
   const int pieceInset = (square - PIECE_SIZE) / 2;
   const unsigned long boardStart = millis();
+  int blitted = 0;
+  int fallbacks = 0;
 
   // Row 0 on screen is rank 8, so a8 is the top-left (light) square.
   for (int row = 0; row < 8; row++) {
@@ -136,13 +173,22 @@ void ChessPuzzleActivity::render(RenderLock&&) {
       const uint8_t* ink = PIECE_INK_BY_CODE[piece & 15];
       const uint8_t* halo = PIECE_HALO_BY_CODE[piece & 15];
       if (ink == nullptr || halo == nullptr) continue;
+      if (blitPiece(renderer, x + pieceInset, y + pieceInset, piece)) {
+        blitted++;
+        continue;
+      }
       // Halo first so the white rim clears the dither, then the ink on top.
       drawPieceBits(renderer, x + pieceInset, y + pieceInset, halo, false);
       drawPieceBits(renderer, x + pieceInset, y + pieceInset, ink, true);
+      fallbacks++;
     }
   }
   renderer.drawRect(boardX, boardY, boardSize, boardSize, 2, true);
-  LOG_INF("CHESS", "board render %lu ms", static_cast<unsigned long>(millis() - boardStart));
+  if (fallbacks > 0) {
+    LOG_INF("CHESS", "fallback per-pixel: %d pieces", fallbacks);
+  }
+  LOG_INF("CHESS", "board render %lu ms (blit %d, per-pixel %d)", static_cast<unsigned long>(millis() - boardStart),
+          blitted, fallbacks);
 
   // Text area below the board.
   const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);

@@ -86,16 +86,28 @@ solution in SAN. Exits non-zero if any puzzle fails.
 ## pieces/ (piece bitmaps)
 
 `pieces/pieces.py` is the piece silhouette prototype (Pillow). `pieces/gen_header.py`
-turns its 12 pieces into `src/activities/puzzle/PieceBitmaps.h`: an ink and a
-halo bitmap per piece, 60x60 px, 8 bytes per row (MSB = leftmost pixel), plus
-tables indexed by ChessCore piece code. Run it from a scratch directory, since
-importing `pieces.py` writes preview PNGs into the current directory:
+turns its 12 pieces into `src/activities/puzzle/PieceBitmaps.h`, with tables
+indexed by ChessCore piece code:
+
+- stage A: an ink and a halo bitmap per piece, 60x60 px in logical orientation,
+  8 bytes per row (MSB = leftmost pixel); drawn pixel by pixel as a fallback.
+- stage B: the same bitmaps rotated into the Portrait panel layout and
+  pre-shifted by each `--shifts` value, 9 bytes per physical row; written
+  straight into the framebuffer.
+
+The shifts the screen needs are `(board top + 3 + 66 * row) % 8`; with the
+board top at y = 10 (Lyra `topPadding`) that is 1, 3, 5, 7. Run it from a
+scratch directory, since importing `pieces.py` writes preview PNGs into the
+current directory:
 
 ```sh
 venv/bin/pip install pillow
 cd "$(mktemp -d)" && <venv>/bin/python <repo>/tools/pondemate/pieces/gen_header.py \
+    --reference board_start_v4.png --shifts 1,3,5,7 \
     --out <repo>/src/activities/puzzle/PieceBitmaps.h
 ```
 
-The script redraws the start position from the packed bytes and fails unless it
-matches `pieces.py`'s `board_start_v2.png` pixel for pixel.
+`--reference` is the start-position board `pieces.py` just wrote into the
+current directory. The script fails unless both the stage A redraw and the
+stage B blit into a virtual 792x528 Portrait framebuffer (`--panel`,
+`--board-top`) match it pixel for pixel.
