@@ -24,6 +24,10 @@ constexpr TestPosition kPositions[] = {
 };
 constexpr int kPositionCount = sizeof(kPositions) / sizeof(kPositions[0]);
 
+// PieceBitmaps.h only carries pre-shifted bitmaps for shifts {1,3,5,7}, which assume the board top
+// at y = 10. Following the theme's topPadding would push other themes onto the per-pixel fallback.
+constexpr int kBoardTop = 10;
+
 // Sets every pixel whose bit is on in a PIECE_SIZE x PIECE_SIZE 1bpp bitmap.
 void drawPieceBits(const GfxRenderer& renderer, const int x, const int y, const uint8_t* bits, const bool black) {
   for (int row = 0; row < PIECE_SIZE; row++) {
@@ -152,7 +156,7 @@ void ChessPuzzleActivity::render(RenderLock&&) {
   const int square = pageWidth / 8;
   const int boardSize = square * 8;
   const int boardX = (pageWidth - boardSize) / 2;
-  const int boardY = metrics.topPadding;
+  const int boardY = kBoardTop;
 
   const int pieceInset = (square - PIECE_SIZE) / 2;
   const unsigned long boardStart = millis();
