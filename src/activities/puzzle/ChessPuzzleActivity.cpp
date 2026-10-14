@@ -575,17 +575,30 @@ void ChessPuzzleActivity::drawBoard(const chess::Position& board, const bool whi
   const unsigned long boardStart = millis();
   int blitted = 0;
   int fallbacks = 0;
+  const bool holding = marks && (phase == Phase::SelectDest || phase == Phase::SelectPromo);
+  bool groundDrawn = true;
 
   for (int row = 0; row < 8; row++) {
     for (int col = 0; col < 8; col++) {
       const int x = col * square;
       const int y = kBoardTop + row * square;
+      const int sq = whiteAtBottom ? (7 - row) * 8 + col : row * 8 + (7 - col);
       // a1 is dark either way up: (row + col) is odd exactly when rank + file is even.
-      if (((row + col) & 1) != 0) {
+      const bool dark = ((row + col) & 1) != 0;
+      const bool grabbedHere = holding && sq == grabbed;
+      if (dark || grabbedHere) {
         renderer.fillRectDither(x, y, square, square, Color::LightGray);
       }
+      // Grabbed square: the 25% dither inverted gives a 75% ground (only x, y both even stay white);
+      // the piece is then drawn normally on top so its colour still reads right.
+      if (grabbedHere) {
+        groundDrawn = invertSquare(renderer, x, y, square);
+        if (!groundDrawn) {
+          LOG_ERR("CHESS", "cannot darken the grabbed square");
+          if (!dark) renderer.fillRect(x, y, square, square, false);
+        }
+      }
 
-      const int sq = whiteAtBottom ? (7 - row) * 8 + col : row * 8 + (7 - col);
       const uint8_t piece = board.squares[sq];
       const uint8_t* ink = PIECE_INK_BY_CODE[piece & 15];
       const uint8_t* halo = PIECE_HALO_BY_CODE[piece & 15];
@@ -601,15 +614,6 @@ void ChessPuzzleActivity::drawBoard(const chess::Position& board, const bool whi
     }
   }
 
-  // Grabbed piece: its square inverted, before the border so an edge square keeps a black border.
-  bool inverted = true;
-  if (marks && (phase == Phase::SelectDest || phase == Phase::SelectPromo)) {
-    int x, y;
-    squareOrigin(grabbed, whiteAtBottom, square, x, y);
-    inverted = invertSquare(renderer, x, y, square);
-    if (!inverted) LOG_ERR("CHESS", "cannot invert the grabbed square");
-  }
-
   renderer.drawRect(0, kBoardTop, boardSize, boardSize, 2, true);
 
   // Marks go last so their white edge line also shows on the border squares.
@@ -619,7 +623,7 @@ void ChessPuzzleActivity::drawBoard(const chess::Position& board, const bool whi
     drawCorners(renderer, x, y, square);
     squareOrigin(session.lastTo(), whiteAtBottom, square, x, y);
     drawCorners(renderer, x, y, square);
-    if (!inverted) {
+    if (!groundDrawn) {
       squareOrigin(grabbed, whiteAtBottom, square, x, y);
       renderer.drawRect(x, y, square, square, kMarkWidth, true);
     }
