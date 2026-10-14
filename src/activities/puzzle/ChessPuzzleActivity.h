@@ -6,8 +6,8 @@
 #include "activities/Activity.h"
 
 // Chess puzzle screen for the X3 puzzle machine (PondeMate).
-// Step 1: loads a FEN position with ChessCore, shows the pieces as letters,
-// the legal move count and a few SAN moves, and runs perft on OK.
+// Loads a FEN position with ChessCore, draws the pieces as bitmaps,
+// shows the legal move count and a few SAN moves, and runs perft on OK.
 class ChessPuzzleActivity final : public Activity {
   static constexpr int kMaxSanMoves = 16;
   static constexpr int kSanBytes = 10;  // moveToSan() needs at least 10 bytes

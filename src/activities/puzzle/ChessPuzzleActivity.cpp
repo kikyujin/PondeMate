@@ -6,6 +6,7 @@
 
 #include <cstdio>
 
+#include "PieceBitmaps.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -23,12 +24,14 @@ constexpr TestPosition kPositions[] = {
 };
 constexpr int kPositionCount = sizeof(kPositions) / sizeof(kPositions[0]);
 
-char pieceLetter(const uint8_t piece) {
-  constexpr char kWhite[] = ".PNBRQK";
-  constexpr char kBlack[] = ".pnbrqk";
-  const uint8_t type = chess::pieceType(piece);
-  if (type == chess::Empty || type > chess::King) return '\0';
-  return chess::isBlack(piece) ? kBlack[type] : kWhite[type];
+// Sets every pixel whose bit is on in a PIECE_SIZE x PIECE_SIZE 1bpp bitmap.
+void drawPieceBits(const GfxRenderer& renderer, const int x, const int y, const uint8_t* bits, const bool black) {
+  for (int row = 0; row < PIECE_SIZE; row++) {
+    const uint8_t* rowBits = bits + row * PIECE_ROW_BYTES;
+    for (int col = 0; col < PIECE_SIZE; col++) {
+      if (rowBits[col >> 3] & (0x80 >> (col & 7))) renderer.drawPixel(x + col, y + row, black);
+    }
+  }
 }
 
 }  // namespace
@@ -116,9 +119,8 @@ void ChessPuzzleActivity::render(RenderLock&&) {
   const int boardX = (pageWidth - boardSize) / 2;
   const int boardY = metrics.topPadding;
 
-  const int pieceFont = UI_12_FONT_ID;
-  const int pieceLineHeight = renderer.getLineHeight(pieceFont);
-  char letter[2] = {};
+  const int pieceInset = (square - PIECE_SIZE) / 2;
+  const unsigned long boardStart = millis();
 
   // Row 0 on screen is rank 8, so a8 is the top-left (light) square.
   for (int row = 0; row < 8; row++) {
@@ -130,14 +132,17 @@ void ChessPuzzleActivity::render(RenderLock&&) {
         renderer.fillRectDither(x, y, square, square, Color::LightGray);
       }
 
-      letter[0] = pieceLetter(position.squares[(7 - row) * 8 + file]);
-      if (letter[0] == '\0') continue;
-      const int textWidth = renderer.getTextWidth(pieceFont, letter, EpdFontFamily::BOLD);
-      renderer.drawText(pieceFont, x + (square - textWidth) / 2, y + (square - pieceLineHeight) / 2, letter, true,
-                        EpdFontFamily::BOLD);
+      const uint8_t piece = position.squares[(7 - row) * 8 + file];
+      const uint8_t* ink = PIECE_INK_BY_CODE[piece & 15];
+      const uint8_t* halo = PIECE_HALO_BY_CODE[piece & 15];
+      if (ink == nullptr || halo == nullptr) continue;
+      // Halo first so the white rim clears the dither, then the ink on top.
+      drawPieceBits(renderer, x + pieceInset, y + pieceInset, halo, false);
+      drawPieceBits(renderer, x + pieceInset, y + pieceInset, ink, true);
     }
   }
   renderer.drawRect(boardX, boardY, boardSize, boardSize, 2, true);
+  LOG_INF("CHESS", "board render %lu ms", static_cast<unsigned long>(millis() - boardStart));
 
   // Text area below the board.
   const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);

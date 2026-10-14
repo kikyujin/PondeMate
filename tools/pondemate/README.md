@@ -82,3 +82,20 @@ parses, and every UCI move matches a legal move (`moveToString`), is converted
 to SAN and played. Files named `mate_*.txt` must also end in checkmate. The
 first three puzzles of each set are printed with the opponent's move and the
 solution in SAN. Exits non-zero if any puzzle fails.
+
+## pieces/ (piece bitmaps)
+
+`pieces/pieces.py` is the piece silhouette prototype (Pillow). `pieces/gen_header.py`
+turns its 12 pieces into `src/activities/puzzle/PieceBitmaps.h`: an ink and a
+halo bitmap per piece, 60x60 px, 8 bytes per row (MSB = leftmost pixel), plus
+tables indexed by ChessCore piece code. Run it from a scratch directory, since
+importing `pieces.py` writes preview PNGs into the current directory:
+
+```sh
+venv/bin/pip install pillow
+cd "$(mktemp -d)" && <venv>/bin/python <repo>/tools/pondemate/pieces/gen_header.py \
+    --out <repo>/src/activities/puzzle/PieceBitmaps.h
+```
+
+The script redraws the start position from the packed bytes and fails unless it
+matches `pieces.py`'s `board_start_v2.png` pixel for pixel.
