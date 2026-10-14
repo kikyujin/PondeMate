@@ -331,4 +331,34 @@ uint8_t PuzzleSession::initialCursor() const {
   return pieces[best];
 }
 
+uint8_t PuzzleSession::initialDestination(const uint8_t from) const {
+  uint8_t dests[64];
+  const int n = destinations(from, dests);
+  if (n == 0) return from;
+  const int file = from & 7;
+  const int rank = from >> 3;
+  int best = -1;
+  int bestDist = 99;
+  // Ascending squares, so the first minimum is the lowest square.
+  for (int i = 0; i < n; ++i) {
+    if ((dests[i] & 7) != file) continue;
+    const int dist = absInt((dests[i] >> 3) - rank);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = i;
+    }
+  }
+  if (best >= 0) return dests[best];
+  for (int i = 0; i < n; ++i) {
+    const int df = absInt((dests[i] & 7) - file);
+    const int dr = absInt((dests[i] >> 3) - rank);
+    const int dist = df > dr ? df : dr;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = i;
+    }
+  }
+  return dests[best];
+}
+
 }  // namespace pondemate

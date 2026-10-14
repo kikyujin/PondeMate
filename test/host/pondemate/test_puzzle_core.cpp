@@ -74,6 +74,11 @@ struct SetStats {
   int snapHist[8] = {};  // 0-4, 5-8, 9-12, 13-16, 17-20, 21-24, 25-28, 29+
   int listHist[8] = {};
   int unreachable = 0;
+  // 007: destination cursor started on the grabbed square.
+  long oldSum = 0;
+  int oldMax = 0;
+  int oldHist[8] = {};
+  int startHits = 0;
 };
 
 chess::Move cands[chess::kMaxMoves];
@@ -210,8 +215,12 @@ bool sameSet(const uint8_t* got, const int n, const bool* want) {
 
 // Checks the snap-cursor helpers at one player turn and returns the presses
 // needed to enter `move`; fills `keys` with the simulator key sequence.
+// Destination selection starts on initialDestination(); `oldPresses` is the
+// 007 count with the cursor starting on the grabbed square, `startHit` whether
+// the starting destination already is `move.to`.
 int cursorTurn(const PuzzleSession& session, const chess::MoveList& legalMoves, const chess::Move& move,
-               const char* set, const char* id, SetStats& stats, char* keys, const size_t keysLen) {
+               const char* set, const char* id, SetStats& stats, char* keys, const size_t keysLen,
+               int* oldPresses = nullptr, bool* startHit = nullptr) {
   const bool wb = session.playerIsWhite();
   uint8_t movable[64];
   const int nm = session.movablePieces(movable);
@@ -236,7 +245,9 @@ int cursorTurn(const PuzzleSession& session, const chess::MoveList& legalMoves, 
   }
 
   static Reach dest;
+  static Reach fromGrabbed;
   int destPresses = -1;
+  int oldDestPresses = -1;
   for (int i = 0; i < nm; ++i) {
     uint8_t targets[64];
     const int nd = session.destinations(movable[i], targets);
@@ -245,20 +256,25 @@ int cursorTurn(const PuzzleSession& session, const chess::MoveList& legalMoves, 
       if (legalMoves.moves[k].from == movable[i]) toWanted[legalMoves.moves[k].to] = true;
     }
     if (!sameSet(targets, nd, toWanted)) fail(set, id, "destinations != legal destinations");
-    explore(movable[i], targets, nd, wb, dest, set, id);
+    const uint8_t first = session.initialDestination(movable[i]);
+    if (!toWanted[first]) fail(set, id, "initialDestination is not a destination");
+    explore(first, targets, nd, wb, dest, set, id);
     for (int k = 0; k < nd; ++k) {
       if (dest.dist[targets[k]] < 0) {
         char a[3], b[3];
         squareName(movable[i], a);
         squareName(targets[k], b);
         char what[64];
-        snprintf(what, sizeof(what), "destination %s unreachable from piece %s", b, a);
+        snprintf(what, sizeof(what), "destination %s unreachable when grabbing %s", b, a);
         fail(set, id, what);
         stats.unreachable++;
       }
     }
     if (movable[i] == move.from) {
       destPresses = dest.dist[move.to];
+      explore(movable[i], targets, nd, wb, fromGrabbed, set, id);
+      oldDestPresses = fromGrabbed.dist[move.to];
+      if (startHit != nullptr) *startHit = first == move.to;
       if (keys != nullptr) {
         keys[0] = '\0';
         appendPath(pieces, move.from, keys, keysLen);
@@ -290,6 +306,9 @@ int cursorTurn(const PuzzleSession& session, const chess::MoveList& legalMoves, 
   }
 
   if (pieces.dist[move.from] < 0 || destPresses < 0) return -1;
+  if (oldPresses != nullptr) {
+    *oldPresses = oldDestPresses < 0 ? -1 : pieces.dist[move.from] + 1 + oldDestPresses + 1 + promoPresses;
+  }
   return pieces.dist[move.from] + 1 + destPresses + 1 + promoPresses;
 }
 
@@ -397,7 +416,16 @@ void runPuzzle(const char* set, const char* line, SetStats& stats, const bool sh
 
     // C-2: snap cursor helpers, reachability and press counts.
     char keys[256];
-    const int snapPresses = cursorTurn(session, legal, cands[expectedIndex], set, id, stats, keys, sizeof(keys));
+    int oldPresses = -1;
+    bool startHit = false;
+    const int snapPresses = cursorTurn(session, legal, cands[expectedIndex], set, id, stats, keys, sizeof(keys),
+                                       &oldPresses, &startHit);
+    if (startHit) stats.startHits++;
+    if (oldPresses >= 0) {
+      stats.oldSum += oldPresses;
+      if (oldPresses > stats.oldMax) stats.oldMax = oldPresses;
+      stats.oldHist[histBucket(oldPresses)]++;
+    }
     const int listPresses = expectedIndex + 1;
     if (snapPresses >= 0) {
       stats.snapSum += snapPresses;
@@ -411,8 +439,8 @@ void runPuzzle(const char* set, const char* line, SetStats& stats, const bool sh
       if (!session.playerIsWhite() || ply == 1) printDirections(session);
       char sq[3];
       squareName(session.initialCursor(), sq);
-      printf("    snap cursor: start %s, %d presses (list: %d). standard keys: %s\n", sq, snapPresses, listPresses,
-             keys);
+      printf("    snap cursor: start %s, %d presses (007: %d, list: %d). standard keys: %s\n", sq, snapPresses,
+             oldPresses, listPresses, keys);
       if (ply == 1) {
         // A cheap wrong (non-mating, not expected) move for the simulator run.
         int bestPresses = 1 << 30;
@@ -491,12 +519,16 @@ int runSet(const char* dir, const char* name) {
   printf("  %s: %d puzzles, %d failed, %d player turns, alternative mates in %d positions (%d moves)\n", name,
          stats.puzzles, stats.failed, stats.turns, stats.altMatePositions, stats.altMateMoves);
   const char* buckets[8] = {"0-4", "5-8", "9-12", "13-16", "17-20", "21-24", "25-28", "29+"};
-  printf("  presses per player move (snap cursor vs 006 list): mean %.2f vs %.2f, max %d vs %d, unreachable %d\n",
-         stats.turns ? static_cast<double>(stats.snapSum) / stats.turns : 0.0,
-         stats.turns ? static_cast<double>(stats.listSum) / stats.turns : 0.0, stats.snapMax, stats.listMax,
-         stats.unreachable);
-  printf("    presses   snap   list\n");
-  for (int i = 0; i < 8; ++i) printf("    %-7s %6d %6d\n", buckets[i], stats.snapHist[i], stats.listHist[i]);
+  const double turns = stats.turns ? static_cast<double>(stats.turns) : 1.0;
+  printf("  presses per player move: now %.2f (max %d), 007 %.2f (max %d), 006 list %.2f (max %d); unreachable %d\n",
+         stats.snapSum / turns, stats.snapMax, stats.oldSum / turns, stats.oldMax, stats.listSum / turns,
+         stats.listMax, stats.unreachable);
+  printf("  destination cursor starts on the answer: %d of %d turns (%.1f%%)\n", stats.startHits, stats.turns,
+         100.0 * stats.startHits / turns);
+  printf("    presses    now    007   list\n");
+  for (int i = 0; i < 8; ++i) {
+    printf("    %-7s %6d %6d %6d\n", buckets[i], stats.snapHist[i], stats.oldHist[i], stats.listHist[i]);
+  }
   return stats.failed;
 }
 

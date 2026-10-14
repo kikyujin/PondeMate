@@ -81,6 +81,11 @@ class PuzzleSession {
   // Where the cursor starts: the movable piece closest (Chebyshev distance) to
   // the last move's destination, the lower square on a tie.
   uint8_t initialCursor() const;
+  // Where the destination cursor starts after grabbing `from`: the destination
+  // on the same file with the smallest rank difference, otherwise the closest
+  // destination (Chebyshev distance); the lower square on a tie. Board
+  // coordinates, independent of how the board is drawn.
+  uint8_t initialDestination(uint8_t from) const;
 
   const chess::Position& position() const { return pos; }
   bool playerIsWhite() const { return playerWhite; }
