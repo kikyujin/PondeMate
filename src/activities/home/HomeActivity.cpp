@@ -27,7 +27,7 @@
 #include "fontIds.h"
 
 int HomeActivity::getMenuItemCount() const {
-  int count = 5;  // File Browser, Library, File transfer, Settings, Chess Puzzle
+  int count = 5;  // File Browser, Library, File transfer, Settings, PondeMate
   if (!recentBooks.empty()) {
     count += recentBooks.size();
   }
@@ -512,7 +512,7 @@ void HomeActivity::render(RenderLock&&) {
 
   // Build menu items dynamically
   std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_LIBRARY), tr(STR_FILE_TRANSFER),
-                                        tr(STR_SETTINGS_TITLE), "Chess Puzzle"};
+                                        tr(STR_SETTINGS_TITLE), "PondeMate"};
   std::vector<UIIcon> menuIcons = {Folder, Library, Transfer, Settings, Blocks};
 
   if (hasOpdsServers) {

@@ -2,15 +2,24 @@
 
 #include <Arduino.h>
 #include <GfxRenderer.h>
+#include <HalStorage.h>
 #include <Logging.h>
 
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include "PieceBitmaps.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
 namespace {
+
+constexpr char kSetsDir[] = "/pondemate/sets";
+constexpr char kProgressDir[] = "/pondemate/progress";
+constexpr char kSettingsPath[] = "/pondemate/settings.txt";
+constexpr char kLogPath[] = "/pondemate/log.txt";
+constexpr char kSetSuffix[] = ".txt";
 
 struct TestPosition {
   const char* name;
@@ -27,6 +36,11 @@ constexpr int kPositionCount = sizeof(kPositions) / sizeof(kPositions[0]);
 // PieceBitmaps.h only carries pre-shifted bitmaps for shifts {1,3,5,7}, which assume the board top
 // at y = 10. Following the theme's topPadding would push other themes onto the per-pixel fallback.
 constexpr int kBoardTop = 10;
+// Marks live in the 3px band inside each square; the piece box starts at (3, 3).
+constexpr int kMarkWidth = 3;
+constexpr int kCornerArm = 14;
+
+const char* const kPieceNames[7] = {"", "Pawn", "Knight", "Bishop", "Rook", "Queen", "King"};
 
 // Sets every pixel whose bit is on in a PIECE_SIZE x PIECE_SIZE 1bpp bitmap.
 void drawPieceBits(const GfxRenderer& renderer, const int x, const int y, const uint8_t* bits, const bool black) {
@@ -73,7 +87,384 @@ bool blitPiece(const GfxRenderer& renderer, const int x, const int y, const uint
   return true;
 }
 
+void squareName(const uint8_t sq, char* out) {
+  out[0] = static_cast<char>('a' + (sq & 7));
+  out[1] = static_cast<char>('1' + (sq >> 3));
+  out[2] = '\0';
+}
+
+// Top-left pixel of a board square as drawn (black at the bottom when !whiteAtBottom).
+void squareOrigin(const uint8_t sq, const bool whiteAtBottom, const int square, int& x, int& y) {
+  const int col = whiteAtBottom ? (sq & 7) : 7 - (sq & 7);
+  const int row = whiteAtBottom ? 7 - (sq >> 3) : (sq >> 3);
+  x = col * square;
+  y = kBoardTop + row * square;
+}
+
+void drawCorners(const GfxRenderer& renderer, const int x, const int y, const int size) {
+  const int far = size - kMarkWidth;
+  const int armFar = size - kCornerArm;
+  renderer.fillRect(x, y, kCornerArm, kMarkWidth);
+  renderer.fillRect(x, y, kMarkWidth, kCornerArm);
+  renderer.fillRect(x + armFar, y, kCornerArm, kMarkWidth);
+  renderer.fillRect(x + far, y, kMarkWidth, kCornerArm);
+  renderer.fillRect(x, y + far, kCornerArm, kMarkWidth);
+  renderer.fillRect(x, y + armFar, kMarkWidth, kCornerArm);
+  renderer.fillRect(x + armFar, y + far, kCornerArm, kMarkWidth);
+  renderer.fillRect(x + far, y + armFar, kMarkWidth, kCornerArm);
+}
+
+// Dashed 3px frame: 6px on, 4px off, so it reads differently from the solid cursor.
+void drawDashedFrame(const GfxRenderer& renderer, const int x, const int y, const int size) {
+  for (int d = 0; d < size; d += 10) {
+    const int len = d + 6 <= size ? 6 : size - d;
+    renderer.fillRect(x + d, y, len, kMarkWidth);
+    renderer.fillRect(x + d, y + size - kMarkWidth, len, kMarkWidth);
+    renderer.fillRect(x, y + d, kMarkWidth, len);
+    renderer.fillRect(x + size - kMarkWidth, y + d, kMarkWidth, len);
+  }
+}
+
+pondemate::Dir toDir(const ChessPuzzleActivity::Action action) {
+  switch (action) {
+    case ChessPuzzleActivity::Action::Up:
+      return pondemate::Dir::Up;
+    case ChessPuzzleActivity::Action::Down:
+      return pondemate::Dir::Down;
+    case ChessPuzzleActivity::Action::Left:
+      return pondemate::Dir::Left;
+    default:
+      return pondemate::Dir::Right;
+  }
+}
+
+bool isDirection(const ChessPuzzleActivity::Action action) {
+  return action == ChessPuzzleActivity::Action::Up || action == ChessPuzzleActivity::Action::Down ||
+         action == ChessPuzzleActivity::Action::Left || action == ChessPuzzleActivity::Action::Right;
+}
+
+// Reads a small text file into `buf` (NUL-terminated). Returns false when missing or empty.
+bool readSmallFile(const char* path, char* buf, const size_t size) {
+  if (!Storage.exists(path)) return false;
+  const size_t n = Storage.readFileToBuffer(path, buf, size, size - 1);
+  buf[n < size ? n : size - 1] = '\0';
+  return n > 0;
+}
+
+bool writeSmallFile(const char* path, const char* text) {
+  HalFile file;
+  if (!Storage.openFileForWrite("PONDE", path, file)) {
+    LOG_ERR("PONDE", "Cannot write %s", path);
+    return false;
+  }
+  const size_t len = strlen(text);
+  return file.write(text, len) == len;
+}
+
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// Input
+
+// Standard: front Back/OK/Up/Down, side Left/Right (the X3's side Up key sits on the left edge).
+// hjkl: front h/j/k/l = Left/Down/Up/Right, side OK/Back.
+ChessPuzzleActivity::Action ChessPuzzleActivity::readAction() const {
+  using Button = MappedInputManager::Button;
+  const bool hjkl = layout == Layout::Hjkl;
+  if (mappedInput.wasPressed(Button::Back)) return hjkl ? Action::Left : Action::Back;
+  if (mappedInput.wasPressed(Button::Confirm)) return hjkl ? Action::Down : Action::Ok;
+  if (mappedInput.wasPressed(Button::Left)) return Action::Up;
+  if (mappedInput.wasPressed(Button::Right)) return hjkl ? Action::Right : Action::Down;
+  if (mappedInput.wasPressed(Button::Up)) return hjkl ? Action::Ok : Action::Left;
+  if (mappedInput.wasPressed(Button::Down)) return hjkl ? Action::Back : Action::Right;
+  return Action::None;
+}
+
+// ---------------------------------------------------------------------------
+// Storage
+
+void ChessPuzzleActivity::loadSettings() {
+  char buf[32];
+  layout = Layout::Standard;
+  if (readSmallFile(kSettingsPath, buf, sizeof(buf)) && strstr(buf, "hjkl") != nullptr) layout = Layout::Hjkl;
+}
+
+void ChessPuzzleActivity::saveSettings() const {
+  Storage.mkdir("/pondemate");
+  writeSmallFile(kSettingsPath, layout == Layout::Hjkl ? "buttons=hjkl\n" : "buttons=standard\n");
+}
+
+void ChessPuzzleActivity::scanSets() {
+  setCount = 0;
+  HalFile dir = Storage.open(kSetsDir);
+  if (!dir || !dir.isDirectory()) {
+    LOG_INF("PONDE", "No set directory %s", kSetsDir);
+    return;
+  }
+
+  char name[64];
+  const size_t suffixLen = strlen(kSetSuffix);
+  for (HalFile entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
+    if (entry.isDirectory()) continue;
+    entry.getName(name, sizeof(name));
+    const size_t len = strlen(name);
+    if (name[0] == '.' || len <= suffixLen || strcmp(name + len - suffixLen, kSetSuffix) != 0) continue;
+    if (len - suffixLen >= static_cast<size_t>(kSetNameBytes)) continue;
+    const size_t bytes = entry.fileSize();
+    if (bytes == 0 || bytes % pondemate::kRecordBytes != 0) continue;
+    if (setCount == kMaxSets) {
+      LOG_INF("PONDE", "More than %d sets, ignoring %s", kMaxSets, name);
+      continue;
+    }
+
+    // Insertion by name keeps the list sorted without another pass.
+    name[len - suffixLen] = '\0';
+    int at = setCount;
+    while (at > 0 && strcmp(setNames[at - 1], name) > 0) {
+      memcpy(setNames[at], setNames[at - 1], kSetNameBytes);
+      setTotals[at] = setTotals[at - 1];
+      at--;
+    }
+    snprintf(setNames[at], kSetNameBytes, "%s", name);
+    setTotals[at] = static_cast<int>(bytes / pondemate::kRecordBytes);
+    setCount++;
+  }
+
+  char path[96];
+  char buf[16];
+  for (int i = 0; i < setCount; i++) {
+    snprintf(path, sizeof(path), "%s/%s.txt", kProgressDir, setNames[i]);
+    int next = readSmallFile(path, buf, sizeof(buf)) ? atoi(buf) : 0;
+    if (next < 0) next = 0;
+    if (next > setTotals[i]) next = setTotals[i];
+    setNext[i] = next;
+  }
+  if (pickerIndex > setCount + 1) pickerIndex = 0;
+}
+
+bool ChessPuzzleActivity::openPuzzle(const int set, const int index) {
+  setIndex = set;
+  puzzleIndex = index;
+  hasPuzzle = false;
+  statusText[0] = '\0';
+  cursorText[0] = '\0';
+
+  char path[96];
+  snprintf(path, sizeof(path), "%s/%s.txt", kSetsDir, setNames[set]);
+  HalFile file;
+  const bool read = Storage.openFileForRead("PONDE", path, file) &&
+                    file.seek(static_cast<size_t>(index) * pondemate::kRecordBytes) &&
+                    file.read(recordBuf, pondemate::kRecordBytes) == pondemate::kRecordBytes;
+  if (!read || !pondemate::parseRecord(recordBuf, pondemate::kRecordBytes, record) || !session.begin(record)) {
+    LOG_ERR("PONDE", "Bad puzzle %s #%d", setNames[set], index);
+    phase = Phase::Error;
+    snprintf(statusText, sizeof(statusText), "Cannot load puzzle #%d", index + 1);
+    return false;
+  }
+  hasPuzzle = true;
+  LOG_INF("PONDE", "Puzzle %s #%d %s (%d)", setNames[set], index, record.id, record.rating);
+  startTurn();
+  return true;
+}
+
+void ChessPuzzleActivity::recordSolved() {
+  setNext[setIndex] = puzzleIndex + 1;
+  Storage.mkdir(kProgressDir);
+  char path[96];
+  char text[16];
+  snprintf(path, sizeof(path), "%s/%s.txt", kProgressDir, setNames[setIndex]);
+  snprintf(text, sizeof(text), "%d\n", puzzleIndex + 1);
+  writeSmallFile(path, text);
+
+  char line[kLineBytes + kSetNameBytes];
+  const int len = snprintf(line, sizeof(line), "%s\t%d\t%s\t%d\t%d\n", setNames[setIndex], puzzleIndex, record.id,
+                           record.rating, session.mistakes());
+  HalFile log = Storage.open(kLogPath, O_RDWR | O_CREAT);
+  if (!log || !log.seek(log.fileSize()) || log.write(line, len) != static_cast<size_t>(len)) {
+    LOG_ERR("PONDE", "Cannot append %s", kLogPath);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Puzzle state
+
+void ChessPuzzleActivity::startTurn() {
+  phase = Phase::SelectPiece;
+  targetCount = session.movablePieces(targets);
+  cursor = session.initialCursor();
+  updateCursorText();
+}
+
+void ChessPuzzleActivity::updateCursorText() {
+  char sq[3];
+  const auto& board = session.position();
+  switch (phase) {
+    case Phase::SelectPiece:
+      squareName(cursor, sq);
+      snprintf(cursorText, sizeof(cursorText), "%s %s", kPieceNames[chess::pieceType(board.squares[cursor])], sq);
+      break;
+    case Phase::SelectDest: {
+      if (cursor == grabbed) {
+        squareName(grabbed, sq);
+        snprintf(cursorText, sizeof(cursorText), "%s %s - pick a square",
+                 kPieceNames[chess::pieceType(board.squares[grabbed])], sq);
+        break;
+      }
+      chess::Move choices[4];
+      if (session.promotionChoices(grabbed, cursor, choices) > 0) {
+        session.displayText(choices[0], cursorText, sizeof(cursorText), true);
+      }
+      break;
+    }
+    case Phase::SelectPromo: {
+      char move[16];
+      session.displayText(promoChoices[promoIndex], move, sizeof(move), true);
+      snprintf(cursorText, sizeof(cursorText), "%s  (promote: %d/%d)", move, promoIndex + 1, promoCount);
+      break;
+    }
+    default:
+      cursorText[0] = '\0';
+      break;
+  }
+}
+
+void ChessPuzzleActivity::handlePuzzle(const Action action) {
+  const bool whiteAtBottom = session.playerIsWhite();
+
+  if (action == Action::Back) {
+    if (phase == Phase::SelectDest || phase == Phase::SelectPromo) {
+      phase = Phase::SelectPiece;
+      targetCount = session.movablePieces(targets);
+      cursor = grabbed;
+      updateCursorText();
+      return;
+    }
+    mode = Mode::Picker;
+    scanSets();
+    return;
+  }
+
+  switch (phase) {
+    case Phase::SelectPiece:
+      if (isDirection(action)) {
+        cursor = pondemate::snap(cursor, toDir(action), targets, targetCount, whiteAtBottom);
+      } else if (action == Action::Ok) {
+        grabbed = cursor;
+        targetCount = session.destinations(grabbed, targets);
+        phase = Phase::SelectDest;
+        statusText[0] = '\0';
+      }
+      updateCursorText();
+      return;
+
+    case Phase::SelectDest:
+      if (isDirection(action)) {
+        cursor = pondemate::snap(cursor, toDir(action), targets, targetCount, whiteAtBottom);
+        updateCursorText();
+        return;
+      }
+      if (action != Action::Ok || cursor == grabbed) return;
+      promoCount = session.promotionChoices(grabbed, cursor, promoChoices);
+      promoIndex = 0;
+      if (promoCount > 1) {
+        phase = Phase::SelectPromo;
+        updateCursorText();
+        return;
+      }
+      break;
+
+    case Phase::SelectPromo:
+      if (action == Action::Up && promoIndex > 0) promoIndex--;
+      if (action == Action::Down && promoIndex + 1 < promoCount) promoIndex++;
+      if (action != Action::Ok) {
+        updateCursorText();
+        return;
+      }
+      break;
+
+    case Phase::Solved:
+      if (action != Action::Ok) return;
+      if (puzzleIndex + 1 >= setTotals[setIndex]) {
+        phase = Phase::Complete;
+        snprintf(statusText, sizeof(statusText), "Set complete");
+        cursorText[0] = '\0';
+      } else {
+        openPuzzle(setIndex, puzzleIndex + 1);
+      }
+      return;
+
+    default:
+      if (action == Action::Ok) {
+        mode = Mode::Picker;
+        scanSets();
+      }
+      return;
+  }
+
+  // A move was chosen in SelectDest or SelectPromo.
+  const chess::Move move = promoChoices[promoIndex];
+  switch (session.play(move)) {
+    case pondemate::PlayResult::Wrong:
+      startTurn();
+      snprintf(statusText, sizeof(statusText), "Wrong - try again (mistakes: %d)", session.mistakes());
+      break;
+    case pondemate::PlayResult::Correct:
+      startTurn();
+      snprintf(statusText, sizeof(statusText), "Correct - keep going");
+      break;
+    case pondemate::PlayResult::Solved:
+      phase = Phase::Solved;
+      cursorText[0] = '\0';
+      snprintf(statusText, sizeof(statusText), "Solved! (mistakes: %d)  OK: next", session.mistakes());
+      recordSolved();
+      break;
+  }
+}
+
+void ChessPuzzleActivity::handlePicker(const Action action) {
+  const int rows = setCount + 2;
+  if (action == Action::Up && pickerIndex > 0) pickerIndex--;
+  if (action == Action::Down && pickerIndex + 1 < rows) pickerIndex++;
+  if (action != Action::Ok) return;
+
+  if (pickerIndex < setCount) {
+    mode = Mode::Puzzle;
+    if (setNext[pickerIndex] >= setTotals[pickerIndex]) {
+      setIndex = pickerIndex;
+      puzzleIndex = setTotals[pickerIndex] - 1;
+      hasPuzzle = false;
+      phase = Phase::Complete;
+      cursorText[0] = '\0';
+      snprintf(statusText, sizeof(statusText), "Set complete");
+    } else {
+      openPuzzle(pickerIndex, setNext[pickerIndex]);
+    }
+  } else if (pickerIndex == setCount) {
+    layout = layout == Layout::Standard ? Layout::Hjkl : Layout::Standard;
+    saveSettings();
+  } else {
+    mode = Mode::Debug;
+    loadPosition(0);
+  }
+}
+
+void ChessPuzzleActivity::handleDebug(const Action action) {
+  if (action == Action::Back) {
+    mode = Mode::Picker;
+    scanSets();
+    return;
+  }
+  if (action == Action::Up || action == Action::Down) {
+    const int step = action == Action::Up ? -1 : 1;
+    loadPosition((positionIndex + step + kPositionCount) % kPositionCount);
+  } else if (action == Action::Ok) {
+    // Holding the render lock (taken by loop()) keeps the screen untouched until perft finishes.
+    runPerft();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Debug: Phase 1 perft check
 
 void ChessPuzzleActivity::loadPosition(const int index) {
   positionIndex = index;
@@ -111,69 +502,63 @@ void ChessPuzzleActivity::runPerft() {
           static_cast<unsigned long long>(nodes), static_cast<unsigned long>(perftMs));
 }
 
+// ---------------------------------------------------------------------------
+// Lifecycle
+
 void ChessPuzzleActivity::onEnter() {
   Activity::onEnter();
-  loadPosition(0);
+  loadSettings();
+  scanSets();
   requestUpdateAndWait();
 }
 
 void ChessPuzzleActivity::loop() {
-  using Button = MappedInputManager::Button;
-  if (mappedInput.wasPressed(Button::Back)) {
+  const Action action = readAction();
+  if (action == Action::None) return;
+
+  if (mode == Mode::Picker && action == Action::Back) {
     onGoHome();
     return;
   }
-
-  int step = 0;
-  if (mappedInput.wasPressed(Button::Up)) step = -1;
-  if (mappedInput.wasPressed(Button::Down)) step = 1;
-  if (step != 0) {
-    {
-      RenderLock lock(*this);
-      loadPosition((positionIndex + step + kPositionCount) % kPositionCount);
+  {
+    RenderLock lock(*this);
+    switch (mode) {
+      case Mode::Picker:
+        handlePicker(action);
+        break;
+      case Mode::Puzzle:
+        handlePuzzle(action);
+        break;
+      case Mode::Debug:
+        handleDebug(action);
+        break;
     }
-    requestUpdate();
-    return;
   }
-
-  if (mappedInput.wasPressed(Button::Confirm)) {
-    // Holding the render lock keeps the screen untouched until perft finishes.
-    {
-      RenderLock lock(*this);
-      runPerft();
-    }
-    requestUpdate();
-  }
+  requestUpdate();
 }
 
-void ChessPuzzleActivity::render(RenderLock&&) {
-  renderer.clearScreen();
+// ---------------------------------------------------------------------------
+// Drawing
 
-  const int pageWidth = renderer.getScreenWidth();
-  const auto& metrics = UITheme::getInstance().getMetrics();
-
-  // Board: as large as the width allows, squares of equal integer size.
-  const int square = pageWidth / 8;
+void ChessPuzzleActivity::drawBoard(const chess::Position& board, const bool whiteAtBottom, const bool marks) const {
+  const int square = renderer.getScreenWidth() / 8;
   const int boardSize = square * 8;
-  const int boardX = (pageWidth - boardSize) / 2;
-  const int boardY = kBoardTop;
-
   const int pieceInset = (square - PIECE_SIZE) / 2;
   const unsigned long boardStart = millis();
   int blitted = 0;
   int fallbacks = 0;
 
-  // Row 0 on screen is rank 8, so a8 is the top-left (light) square.
   for (int row = 0; row < 8; row++) {
-    for (int file = 0; file < 8; file++) {
-      const int x = boardX + file * square;
-      const int y = boardY + row * square;
-      const bool dark = ((row + file) & 1) != 0;
-      if (dark) {
+    for (int col = 0; col < 8; col++) {
+      const int x = col * square;
+      const int y = kBoardTop + row * square;
+      // a1 is dark either way up: (row + col) is odd exactly when rank + file is even.
+      if (((row + col) & 1) != 0) {
         renderer.fillRectDither(x, y, square, square, Color::LightGray);
       }
 
-      const uint8_t piece = position.squares[(7 - row) * 8 + file];
+      const int sq = whiteAtBottom ? (7 - row) * 8 + col : row * 8 + (7 - col);
+      const uint8_t piece = board.squares[sq];
       const uint8_t* ink = PIECE_INK_BY_CODE[piece & 15];
       const uint8_t* halo = PIECE_HALO_BY_CODE[piece & 15];
       if (ink == nullptr || halo == nullptr) continue;
@@ -187,17 +572,149 @@ void ChessPuzzleActivity::render(RenderLock&&) {
       fallbacks++;
     }
   }
-  renderer.drawRect(boardX, boardY, boardSize, boardSize, 2, true);
+
+  if (marks) {
+    int x, y;
+    squareOrigin(session.lastFrom(), whiteAtBottom, square, x, y);
+    drawCorners(renderer, x, y, square);
+    squareOrigin(session.lastTo(), whiteAtBottom, square, x, y);
+    drawCorners(renderer, x, y, square);
+    if (phase == Phase::SelectDest || phase == Phase::SelectPromo) {
+      squareOrigin(grabbed, whiteAtBottom, square, x, y);
+      drawDashedFrame(renderer, x, y, square);
+    }
+    if (phase == Phase::SelectPiece || phase == Phase::SelectDest || phase == Phase::SelectPromo) {
+      squareOrigin(cursor, whiteAtBottom, square, x, y);
+      if (!(phase != Phase::SelectPiece && cursor == grabbed)) {
+        renderer.drawRect(x, y, square, square, kMarkWidth, true);
+      }
+    }
+  }
+
+  renderer.drawRect(0, kBoardTop, boardSize, boardSize, 2, true);
   if (fallbacks > 0) {
     LOG_INF("CHESS", "fallback per-pixel: %d pieces", fallbacks);
   }
   LOG_INF("CHESS", "board render %lu ms (blit %d, per-pixel %d)", static_cast<unsigned long>(millis() - boardStart),
           blitted, fallbacks);
+}
 
-  // Text area below the board.
+// Front labels go to the theme's hint bar; the side keys are listed as a text line at `y`
+// because the X3's side hints would sit on top of the board.
+void ChessPuzzleActivity::drawHints(const char* back, const char* ok, const char* up, const char* down,
+                                    const char* left, const char* right, const int y) const {
+  const bool hjkl = layout == Layout::Hjkl;
+  // mapLabels() places the logical Back/Confirm/Left/Right labels on the configured front keys.
+  const auto labels = hjkl ? mappedInput.mapLabels(left, down, up, right) : mappedInput.mapLabels(back, ok, up, down);
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+
+  const char* sideTop = hjkl ? ok : left;
+  const char* sideBottom = hjkl ? back : right;
+  if (sideTop[0] == '\0' && sideBottom[0] == '\0') return;
+  char line[kLineBytes];
+  snprintf(line, sizeof(line), "Side keys:  %s  |  %s", sideTop[0] ? sideTop : "-", sideBottom[0] ? sideBottom : "-");
+  renderer.drawCenteredText(UI_10_FONT_ID, y, line);
+}
+
+void ChessPuzzleActivity::renderPicker() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+  const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  const int rowHeight = lineHeight + metrics.verticalSpacing;
+  const int left = metrics.contentSidePadding;
+  int y = metrics.topPadding + metrics.verticalSpacing;
+
+  renderer.drawCenteredText(UI_12_FONT_ID, y, "PondeMate", true, EpdFontFamily::BOLD);
+  y += rowHeight + metrics.verticalSpacing;
+
+  char line[kLineBytes + kSetNameBytes];
+  if (setCount == 0) {
+    renderer.drawText(UI_10_FONT_ID, left, y, "No puzzle sets in /pondemate/sets");
+    y += rowHeight;
+  }
+  const int rows = setCount + 2;
+  for (int i = 0; i < rows; i++) {
+    if (i < setCount) {
+      if (setNext[i] >= setTotals[i]) {
+        snprintf(line, sizeof(line), "%s   done %d / %d", setNames[i], setTotals[i], setTotals[i]);
+      } else {
+        snprintf(line, sizeof(line), "%s   next %d / %d", setNames[i], setNext[i] + 1, setTotals[i]);
+      }
+    } else if (i == setCount) {
+      snprintf(line, sizeof(line), "Buttons: %s", layout == Layout::Hjkl ? "hjkl" : "standard");
+    } else {
+      snprintf(line, sizeof(line), "Debug: perft");
+    }
+    const bool selected = i == pickerIndex;
+    if (selected) renderer.fillRect(0, y - 2, pageWidth, rowHeight, true);
+    renderer.drawText(UI_12_FONT_ID, left, y, line, !selected, selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
+    y += rowHeight;
+  }
+
+  const int hintsY = renderer.getScreenHeight() - metrics.buttonHintsHeight - lineHeight - metrics.verticalSpacing;
+  const bool onSet = pickerIndex < setCount;
+  const char* ok = onSet ? "Start" : (pickerIndex == setCount ? "Toggle" : "Open");
+  drawHints("Home", ok, "Up", "Down", "", "", hintsY);
+}
+
+void ChessPuzzleActivity::renderPuzzle() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int square = renderer.getScreenWidth() / 8;
+  const bool whiteAtBottom = hasPuzzle ? session.playerIsWhite() : true;
+  const bool active = phase == Phase::SelectPiece || phase == Phase::SelectDest || phase == Phase::SelectPromo;
+
+  if (hasPuzzle) drawBoard(session.position(), whiteAtBottom, active);
+
   const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
   const int smallLineHeight = renderer.getLineHeight(UI_10_FONT_ID);
-  int y = boardY + boardSize + metrics.verticalSpacing * 2;
+  int y = kBoardTop + square * 8 + metrics.verticalSpacing * 2;
+
+  char line[kLineBytes + kSetNameBytes];
+  if (hasPuzzle) {
+    snprintf(line, sizeof(line), "%s  #%d  %s  (%d)", setNames[setIndex], puzzleIndex + 1, record.id, record.rating);
+  } else {
+    snprintf(line, sizeof(line), "%s", setNames[setIndex]);
+  }
+  renderer.drawCenteredText(UI_12_FONT_ID, y, line, true, EpdFontFamily::BOLD);
+  y += lineHeight + metrics.verticalSpacing;
+
+  if (hasPuzzle) {
+    renderer.drawCenteredText(UI_12_FONT_ID, y, whiteAtBottom ? "White to move" : "Black to move");
+  }
+  y += lineHeight;
+  if (cursorText[0] != '\0') renderer.drawCenteredText(UI_12_FONT_ID, y, cursorText, true, EpdFontFamily::BOLD);
+  y += lineHeight;
+  if (statusText[0] != '\0') renderer.drawCenteredText(UI_12_FONT_ID, y, statusText);
+  y += lineHeight + smallLineHeight / 2;
+
+  switch (phase) {
+    case Phase::SelectPiece:
+      drawHints("Sets", "Grab", "Up", "Down", "Left", "Right", y);
+      break;
+    case Phase::SelectDest:
+      drawHints("Pieces", "Move", "Up", "Down", "Left", "Right", y);
+      break;
+    case Phase::SelectPromo:
+      drawHints("Pieces", "Promote", "Prev", "Next", "", "", y);
+      break;
+    case Phase::Solved:
+      drawHints("Sets", "Next", "", "", "", "", y);
+      break;
+    default:
+      drawHints("Sets", "Sets", "", "", "", "", y);
+      break;
+  }
+}
+
+void ChessPuzzleActivity::renderDebug() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+  const int square = pageWidth / 8;
+  drawBoard(position, true, false);
+
+  const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  const int smallLineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  int y = kBoardTop + square * 8 + metrics.verticalSpacing * 2;
 
   char line[96];
   snprintf(line, sizeof(line), "%s  -  %s to move", kPositions[positionIndex].name,
@@ -235,9 +752,23 @@ void ChessPuzzleActivity::render(RenderLock&&) {
     snprintf(line, sizeof(line), "perft: -");
   }
   renderer.drawCenteredText(UI_10_FONT_ID, y, line);
+  y += smallLineHeight * 2;
 
-  const auto labels = mappedInput.mapLabels("Back", "perft", "P1/P2", "P1/P2");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  drawHints("Sets", "perft", "P1/P2", "P1/P2", "", "", y);
+}
 
+void ChessPuzzleActivity::render(RenderLock&&) {
+  renderer.clearScreen();
+  switch (mode) {
+    case Mode::Picker:
+      renderPicker();
+      break;
+    case Mode::Puzzle:
+      renderPuzzle();
+      break;
+    case Mode::Debug:
+      renderDebug();
+      break;
+  }
   renderer.displayBuffer();
 }
