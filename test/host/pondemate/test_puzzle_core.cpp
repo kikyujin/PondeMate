@@ -66,6 +66,14 @@ struct SetStats {
   int turns = 0;
   int altMatePositions = 0;
   int altMateMoves = 0;
+  // Button presses to enter the expected move: snap cursor vs the 006 list.
+  long snapSum = 0;
+  long listSum = 0;
+  int snapMax = 0;
+  int listMax = 0;
+  int snapHist[8] = {};  // 0-4, 5-8, 9-12, 13-16, 17-20, 21-24, 25-28, 29+
+  int listHist[8] = {};
+  int unreachable = 0;
 };
 
 chess::Move cands[chess::kMaxMoves];
@@ -85,6 +93,225 @@ void checkMarks(const PuzzleSession& session, const chess::Move& move, const cha
       printf("  displayText: %-8s -> hideMarks %s\n", san, hidden);
       shownMarks++;
     }
+  }
+}
+
+using pondemate::Dir;
+constexpr Dir kDirs[4] = {Dir::Up, Dir::Down, Dir::Left, Dir::Right};
+
+const char* dirName(const Dir d) {
+  switch (d) {
+    case Dir::Up:
+      return "up";
+    case Dir::Down:
+      return "down";
+    case Dir::Left:
+      return "left";
+    default:
+      return "right";
+  }
+}
+
+// Simulator key for each screen direction in the standard layout: the front
+// third/fourth buttons (BTN_LEFT/BTN_RIGHT) are up/down, the side buttons
+// (BTN_UP on the left edge, BTN_DOWN on the right edge) are left/right.
+const char* simKey(const Dir d) {
+  switch (d) {
+    case Dir::Up:
+      return "LEFT";
+    case Dir::Down:
+      return "RIGHT";
+    case Dir::Left:
+      return "UP";
+    default:
+      return "DOWN";
+  }
+}
+
+void squareName(const uint8_t sq, char* out) {
+  out[0] = static_cast<char>('a' + (sq & 7));
+  out[1] = static_cast<char>('1' + (sq >> 3));
+  out[2] = '\0';
+}
+
+// Independent of PuzzleCore: screen column/row (row 0 at the top).
+void cellOf(const uint8_t sq, const bool whiteAtBottom, int& col, int& row) {
+  col = whiteAtBottom ? (sq & 7) : 7 - (sq & 7);
+  row = whiteAtBottom ? 7 - (sq >> 3) : (sq >> 3);
+}
+
+int histBucket(const int presses) {
+  if (presses <= 4) return 0;
+  const int b = (presses - 1) / 4;
+  return b > 7 ? 7 : b;
+}
+
+struct Reach {
+  int dist[64];
+  int parent[64];
+  Dir via[64];
+};
+
+// Breadth-first search over snap steps from `start` through `targets`; also
+// checks every step moves the way the button points on screen.
+void explore(const uint8_t start, const uint8_t* targets, const int n, const bool whiteAtBottom, Reach& r,
+             const char* set, const char* id) {
+  for (int i = 0; i < 64; ++i) r.dist[i] = r.parent[i] = -1;
+  int queue[64];
+  int head = 0, tail = 0;
+  r.dist[start] = 0;
+  queue[tail++] = start;
+  while (head < tail) {
+    const uint8_t cur = static_cast<uint8_t>(queue[head++]);
+    for (const Dir d : kDirs) {
+      const uint8_t next = pondemate::snap(cur, d, targets, n, whiteAtBottom);
+      if (next == cur) continue;
+      bool isTarget = false;
+      for (int i = 0; i < n; ++i) isTarget = isTarget || targets[i] == next;
+      if (!isTarget) fail(set, id, "snap left the target set");
+      int c0, r0, c1, r1;
+      cellOf(cur, whiteAtBottom, c0, r0);
+      cellOf(next, whiteAtBottom, c1, r1);
+      // Up/Down change the screen row; Left/Right step through screen reading order.
+      const bool ok = (d == Dir::Up && r1 < r0) || (d == Dir::Down && r1 > r0) ||
+                      (d == Dir::Left && r1 * 8 + c1 < r0 * 8 + c0) || (d == Dir::Right && r1 * 8 + c1 > r0 * 8 + c0);
+      if (!ok) fail(set, id, "snap moved against the pressed direction");
+      if (r.dist[next] < 0) {
+        r.dist[next] = r.dist[cur] + 1;
+        r.parent[next] = cur;
+        r.via[next] = d;
+        queue[tail++] = next;
+      }
+    }
+  }
+}
+
+// Appends the simulator keys for the shortest path to `target`.
+void appendPath(const Reach& r, const uint8_t target, char* out, const size_t n) {
+  Dir dirs[64];
+  int count = 0;
+  for (int sq = target; r.parent[sq] >= 0; sq = r.parent[sq]) dirs[count++] = r.via[sq];
+  for (int i = count - 1; i >= 0; --i) {
+    strncat(out, simKey(dirs[i]), n - strlen(out) - 1);
+    strncat(out, " ", n - strlen(out) - 1);
+  }
+}
+
+bool sameSet(const uint8_t* got, const int n, const bool* want) {
+  bool seen[64] = {};
+  for (int i = 0; i < n; ++i) {
+    if (seen[got[i]] || !want[got[i]]) return false;
+    seen[got[i]] = true;
+  }
+  int wantCount = 0;
+  for (int i = 0; i < 64; ++i) wantCount += want[i] ? 1 : 0;
+  return wantCount == n;
+}
+
+// Checks the snap-cursor helpers at one player turn and returns the presses
+// needed to enter `move`; fills `keys` with the simulator key sequence.
+int cursorTurn(const PuzzleSession& session, const chess::MoveList& legalMoves, const chess::Move& move,
+               const char* set, const char* id, SetStats& stats, char* keys, const size_t keysLen) {
+  const bool wb = session.playerIsWhite();
+  uint8_t movable[64];
+  const int nm = session.movablePieces(movable);
+  bool fromWanted[64] = {};
+  for (int i = 0; i < legalMoves.count; ++i) fromWanted[legalMoves.moves[i].from] = true;
+  if (!sameSet(movable, nm, fromWanted)) fail(set, id, "movablePieces != legal move origins");
+
+  const uint8_t start = session.initialCursor();
+  if (!fromWanted[start]) fail(set, id, "initialCursor is not a movable piece");
+  static Reach pieces;
+  explore(start, movable, nm, wb, pieces, set, id);
+  for (int i = 0; i < nm; ++i) {
+    if (pieces.dist[movable[i]] < 0) {
+      char a[3], b[3];
+      squareName(start, a);
+      squareName(movable[i], b);
+      char what[64];
+      snprintf(what, sizeof(what), "piece %s unreachable from %s", b, a);
+      fail(set, id, what);
+      stats.unreachable++;
+    }
+  }
+
+  static Reach dest;
+  int destPresses = -1;
+  for (int i = 0; i < nm; ++i) {
+    uint8_t targets[64];
+    const int nd = session.destinations(movable[i], targets);
+    bool toWanted[64] = {};
+    for (int k = 0; k < legalMoves.count; ++k) {
+      if (legalMoves.moves[k].from == movable[i]) toWanted[legalMoves.moves[k].to] = true;
+    }
+    if (!sameSet(targets, nd, toWanted)) fail(set, id, "destinations != legal destinations");
+    explore(movable[i], targets, nd, wb, dest, set, id);
+    for (int k = 0; k < nd; ++k) {
+      if (dest.dist[targets[k]] < 0) {
+        char a[3], b[3];
+        squareName(movable[i], a);
+        squareName(targets[k], b);
+        char what[64];
+        snprintf(what, sizeof(what), "destination %s unreachable from piece %s", b, a);
+        fail(set, id, what);
+        stats.unreachable++;
+      }
+    }
+    if (movable[i] == move.from) {
+      destPresses = dest.dist[move.to];
+      if (keys != nullptr) {
+        keys[0] = '\0';
+        appendPath(pieces, move.from, keys, keysLen);
+        strncat(keys, "CONFIRM ", keysLen - strlen(keys) - 1);
+        appendPath(dest, move.to, keys, keysLen);
+        strncat(keys, "CONFIRM", keysLen - strlen(keys) - 1);
+      }
+    }
+  }
+
+  chess::Move choices[4];
+  const int nc = session.promotionChoices(move.from, move.to, choices);
+  int promoPresses = 0;
+  if (nc > 1) {
+    constexpr uint8_t kOrder[4] = {chess::Queen, chess::Knight, chess::Rook, chess::Bishop};
+    if (nc != 4) fail(set, id, "promotion without four choices");
+    for (int i = 0; i < nc && i < 4; ++i) {
+      if (choices[i].promotion != kOrder[i]) fail(set, id, "promotion choices not Q, N, R, B");
+      if (choices[i].promotion == move.promotion) {
+        promoPresses = i + 1;
+        if (keys != nullptr) {
+          for (int k = 0; k < i; ++k) strncat(keys, " RIGHT", keysLen - strlen(keys) - 1);
+          strncat(keys, " CONFIRM", keysLen - strlen(keys) - 1);
+        }
+      }
+    }
+  } else if (nc != 1) {
+    fail(set, id, "promotionChoices did not find the move");
+  }
+
+  if (pieces.dist[move.from] < 0 || destPresses < 0) return -1;
+  return pieces.dist[move.from] + 1 + destPresses + 1 + promoPresses;
+}
+
+void printDirections(const PuzzleSession& session) {
+  const bool wb = session.playerIsWhite();
+  uint8_t movable[64];
+  const int nm = session.movablePieces(movable);
+  const uint8_t start = session.initialCursor();
+  char from[3], last[3];
+  squareName(start, from);
+  squareName(session.lastTo(), last);
+  int c, r;
+  cellOf(start, wb, c, r);
+  printf("    orientation check (%s at the bottom): last move to %s, cursor %s at screen col %d row %d\n",
+         wb ? "white" : "black", last, from, c, r);
+  for (const Dir d : kDirs) {
+    const uint8_t next = pondemate::snap(start, d, movable, nm, wb);
+    char to[3];
+    squareName(next, to);
+    int c1, r1;
+    cellOf(next, wb, c1, r1);
+    printf("      %-5s -> %s (col %d row %d)%s\n", dirName(d), to, c1, r1, next == start ? "  [no move]" : "");
   }
 }
 
@@ -168,6 +395,55 @@ void runPuzzle(const char* set, const char* line, SetStats& stats, const bool sh
     // 6. hideMarks on the expected move.
     checkMarks(session, cands[expectedIndex], set, id);
 
+    // C-2: snap cursor helpers, reachability and press counts.
+    char keys[256];
+    const int snapPresses = cursorTurn(session, legal, cands[expectedIndex], set, id, stats, keys, sizeof(keys));
+    const int listPresses = expectedIndex + 1;
+    if (snapPresses >= 0) {
+      stats.snapSum += snapPresses;
+      stats.listSum += listPresses;
+      if (snapPresses > stats.snapMax) stats.snapMax = snapPresses;
+      if (listPresses > stats.listMax) stats.listMax = listPresses;
+      stats.snapHist[histBucket(snapPresses)]++;
+      stats.listHist[histBucket(listPresses)]++;
+    }
+    if (show) {
+      if (!session.playerIsWhite() || ply == 1) printDirections(session);
+      char sq[3];
+      squareName(session.initialCursor(), sq);
+      printf("    snap cursor: start %s, %d presses (list: %d). standard keys: %s\n", sq, snapPresses, listPresses,
+             keys);
+      if (ply == 1) {
+        // A cheap wrong (non-mating, not expected) move for the simulator run.
+        int bestPresses = 1 << 30;
+        char bestKeys[256] = "";
+        char bestSan[16] = "";
+        uint8_t movable[64];
+        const int nm = session.movablePieces(movable);
+        for (int i = 0; i < nm; ++i) {
+          uint8_t targets[64];
+          const int nd = session.destinations(movable[i], targets);
+          for (int k = 0; k < nd; ++k) {
+            chess::Move choices[4];
+            session.promotionChoices(movable[i], targets[k], choices);
+            char uci[6];
+            chess::moveToString(choices[0], uci);
+            if (strcmp(uci, expected) == 0 || matesAfter(before, choices[0])) continue;
+            char wrongKeys[256];
+            SetStats scratchStats;
+            const int presses =
+                cursorTurn(session, legal, choices[0], set, id, scratchStats, wrongKeys, sizeof(wrongKeys));
+            if (presses >= 0 && presses < bestPresses) {
+              bestPresses = presses;
+              snprintf(bestKeys, sizeof(bestKeys), "%s", wrongKeys);
+              session.displayText(choices[0], bestSan, sizeof(bestSan), true);
+            }
+          }
+        }
+        printf("    cheapest wrong move: %s, %d presses. standard keys: %s\n", bestSan, bestPresses, bestKeys);
+      }
+    }
+
     if (show) {
       printf("    ply %d, candidates %d, correct #%d:", ply, n, expectedIndex);
       for (int i = 0; i < n; ++i) {
@@ -214,6 +490,13 @@ int runSet(const char* dir, const char* name) {
   fclose(file);
   printf("  %s: %d puzzles, %d failed, %d player turns, alternative mates in %d positions (%d moves)\n", name,
          stats.puzzles, stats.failed, stats.turns, stats.altMatePositions, stats.altMateMoves);
+  const char* buckets[8] = {"0-4", "5-8", "9-12", "13-16", "17-20", "21-24", "25-28", "29+"};
+  printf("  presses per player move (snap cursor vs 006 list): mean %.2f vs %.2f, max %d vs %d, unreachable %d\n",
+         stats.turns ? static_cast<double>(stats.snapSum) / stats.turns : 0.0,
+         stats.turns ? static_cast<double>(stats.listSum) / stats.turns : 0.0, stats.snapMax, stats.listMax,
+         stats.unreachable);
+  printf("    presses   snap   list\n");
+  for (int i = 0; i < 8; ++i) printf("    %-7s %6d %6d\n", buckets[i], stats.snapHist[i], stats.listHist[i]);
   return stats.failed;
 }
 

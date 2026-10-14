@@ -20,7 +20,60 @@ int orderKey(const chess::Position& position, const chess::Move& move) {
   return (kTypeRank[type] << 16) | (move.from << 10) | (move.to << 4) | kPromoRank[move.promotion & 7];
 }
 
+int absInt(const int v) { return v < 0 ? -v : v; }
+
+// Screen column and row (row 0 at the top) of a square.
+void screenCell(const uint8_t sq, const bool whiteAtBottom, int& col, int& row) {
+  const int file = sq & 7;
+  const int rank = sq >> 3;
+  col = whiteAtBottom ? file : 7 - file;
+  row = whiteAtBottom ? 7 - rank : rank;
+}
+
 }  // namespace
+
+uint8_t snap(const uint8_t cur, const Dir d, const uint8_t* targets, const int n, const bool whiteAtBottom) {
+  int c0, r0;
+  screenCell(cur, whiteAtBottom, c0, r0);
+
+  if (d == Dir::Left || d == Dir::Right) {
+    const int curOrder = r0 * 8 + c0;
+    int best = -1;
+    int bestOrder = d == Dir::Right ? 64 : -1;
+    for (int i = 0; i < n; ++i) {
+      int c, r;
+      screenCell(targets[i], whiteAtBottom, c, r);
+      const int order = r * 8 + c;
+      if (d == Dir::Right ? (order > curOrder && order < bestOrder) : (order < curOrder && order > bestOrder)) {
+        bestOrder = order;
+        best = targets[i];
+      }
+    }
+    return best < 0 ? cur : static_cast<uint8_t>(best);
+  }
+
+  int best = -1;
+  int bestScore = 0, bestMain = 0, bestSide = 0;
+  for (int i = 0; i < n; ++i) {
+    if (targets[i] == cur) continue;
+    int c, r;
+    screenCell(targets[i], whiteAtBottom, c, r);
+    const int along = d == Dir::Up ? r0 - r : r - r0;
+    const int side = absInt(c - c0);
+    if (along <= 0) continue;
+    const int score = along + 2 * side;
+    const bool better = best < 0 || score < bestScore || (score == bestScore && along < bestMain) ||
+                        (score == bestScore && along == bestMain && side < bestSide) ||
+                        (score == bestScore && along == bestMain && side == bestSide && targets[i] < best);
+    if (better) {
+      best = targets[i];
+      bestScore = score;
+      bestMain = along;
+      bestSide = side;
+    }
+  }
+  return best < 0 ? cur : static_cast<uint8_t>(best);
+}
 
 bool parseRecord(const char* rec, const size_t len, PuzzleRecord& out) {
   if (rec == nullptr || len != static_cast<size_t>(kRecordBytes) || rec[kRecordBytes - 1] != '\n') return false;
@@ -211,6 +264,71 @@ PlayResult PuzzleSession::play(const chess::Move& move) {
     return PlayResult::Solved;
   }
   return PlayResult::Correct;
+}
+
+int PuzzleSession::movablePieces(uint8_t* out) const {
+  scratch.clear();
+  chess::generateLegalMoves(pos, scratch);
+  bool seen[64] = {};
+  for (int i = 0; i < scratch.count; ++i) seen[scratch.moves[i].from] = true;
+  int count = 0;
+  for (int sq = 0; sq < 64; ++sq) {
+    if (seen[sq]) out[count++] = static_cast<uint8_t>(sq);
+  }
+  return count;
+}
+
+int PuzzleSession::destinations(const uint8_t from, uint8_t* out) const {
+  scratch.clear();
+  chess::generateLegalMoves(pos, scratch);
+  bool seen[64] = {};
+  for (int i = 0; i < scratch.count; ++i) {
+    if (scratch.moves[i].from == from) seen[scratch.moves[i].to] = true;
+  }
+  int count = 0;
+  for (int sq = 0; sq < 64; ++sq) {
+    if (seen[sq]) out[count++] = static_cast<uint8_t>(sq);
+  }
+  return count;
+}
+
+int PuzzleSession::promotionChoices(const uint8_t from, const uint8_t to, chess::Move* out) const {
+  scratch.clear();
+  chess::generateLegalMoves(pos, scratch);
+  constexpr uint8_t kOrder[4] = {chess::Queen, chess::Knight, chess::Rook, chess::Bishop};
+  int count = 0;
+  for (int i = 0; i < scratch.count; ++i) {
+    const chess::Move& move = scratch.moves[i];
+    if (move.from == from && move.to == to && move.promotion == chess::Empty) {
+      out[0] = move;
+      return 1;
+    }
+  }
+  for (const uint8_t promotion : kOrder) {
+    for (int i = 0; i < scratch.count; ++i) {
+      const chess::Move& move = scratch.moves[i];
+      if (move.from == from && move.to == to && move.promotion == promotion) out[count++] = move;
+    }
+  }
+  return count;
+}
+
+uint8_t PuzzleSession::initialCursor() const {
+  uint8_t pieces[64];
+  const int n = movablePieces(pieces);
+  if (n == 0) return lastMoveTo;
+  int best = 0;
+  int bestDist = 99;
+  for (int i = 0; i < n; ++i) {
+    const int df = absInt((pieces[i] & 7) - (lastMoveTo & 7));
+    const int dr = absInt((pieces[i] >> 3) - (lastMoveTo >> 3));
+    const int dist = df > dr ? df : dr;
+    if (dist < bestDist) {  // ascending squares, so the first minimum is the lowest square
+      bestDist = dist;
+      best = i;
+    }
+  }
+  return pieces[best];
 }
 
 }  // namespace pondemate

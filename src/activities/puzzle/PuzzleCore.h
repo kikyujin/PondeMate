@@ -34,6 +34,19 @@ struct PuzzleRecord {
 // count other than four, or a move that is not UCI-shaped.
 bool parseRecord(const char* rec, size_t len, PuzzleRecord& out);
 
+// Directions as seen on screen.
+enum class Dir : uint8_t { Up, Down, Left, Right };
+
+// Snap-cursor step from square `cur` among `targets`, directions as drawn on
+// screen (whiteAtBottom = false means the board is flipped, black at the bottom).
+// Up/Down: the target above/below with the smallest "rows moved + 2 * columns
+// off"; ties go to fewer rows, then fewer columns, then the lower square.
+// Left/Right: the previous/next target in screen reading order (rows top to
+// bottom, each left to right), so every target stays reachable even when
+// Up/Down would always prefer a neighbour.
+// Returns `cur` when nothing lies that way (no wrap-around).
+uint8_t snap(uint8_t cur, Dir d, const uint8_t* targets, int n, bool whiteAtBottom);
+
 enum class PlayResult : uint8_t {
   Solved,   // the move mates, or it is the last move of the solution
   Correct,  // the expected move with more to come; the opponent's reply has been played
@@ -57,6 +70,17 @@ class PuzzleSession {
   void displayText(const chess::Move& move, char* buf, size_t n, bool hideMarks) const;
 
   PlayResult play(const chess::Move& move);
+
+  // Squares of the player's pieces that have at least one legal move, ascending.
+  int movablePieces(uint8_t* out) const;
+  // Legal destination squares of the piece on `from`, ascending, each once
+  // (the four promotions to one square count as one).
+  int destinations(uint8_t from, uint8_t* out) const;
+  // The legal moves from `from` to `to`: Q, N, R, B for a promotion, else one.
+  int promotionChoices(uint8_t from, uint8_t to, chess::Move* out) const;
+  // Where the cursor starts: the movable piece closest (Chebyshev distance) to
+  // the last move's destination, the lower square on a tie.
+  uint8_t initialCursor() const;
 
   const chess::Position& position() const { return pos; }
   bool playerIsWhite() const { return playerWhite; }
