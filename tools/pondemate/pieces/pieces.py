@@ -18,9 +18,9 @@ def shape(kind):
     """returns (silhouette L-img, details list of line specs (pts,width) in units)"""
     im=Image.new("L",(P*SS,P*SS),0); d=ImageDraw.Draw(im); F=255; det=[]
     if kind=="P":
-        circ(d,50,28,13,F)
-        rect(d,34,42,66,49,F,3)
-        poly(d,[(41,46),(59,46),(67,78),(33,78)],F); base(d,F)
+        circ(d,50,36,13.5,F)
+        rect(d,37,49,63,55,F,3)
+        poly(d,[(43,52),(57,52),(64,78),(36,78)],F); base(d,F)
         det=[([(36,45.5),(64,45.5)],0)]  # none really
         det=[]
     elif kind=="R":
@@ -30,8 +30,8 @@ def shape(kind):
         det=[([(21,44),(79,44)],DETAIL),([(26,72.5),(74,72.5)],DETAIL)]
     elif kind=="B":
         circ(d,50,10,6,F)
-        d.ellipse([U(33),U(16),U(67),U(62)],fill=F)
-        poly(d,[(50,13),(40,26),(60,26)],F)
+        d.ellipse([U(30),U(17),U(70),U(61)],fill=F)
+        poly(d,[(50,13),(38,28),(62,28)],F)
         rect(d,34,58,66,65,F,3)
         poly(d,[(42,62),(58,62),(66,78),(34,78)],F); base(d,F)
         det=[([(45,30),(57,44)],DETAIL),([(37,61.5),(63,61.5)],DETAIL)]
@@ -102,5 +102,5 @@ def board(position,path,scale=1):
 
 start=["rnbqkbnr","pppppppp","........","........","........","........","PPPPPPPP","RNBQKBNR"]
 show=["rnbqkp..","..RNBQKP","KQRBNP..","..kqrbnp","........","........","........","........"]
-board(start,"board_start_v2.png")
-board(show,"board_show_x2_v2.png",2)
+board(start,"board_start_v4.png")
+board(show,"board_show_x2_v4.png",2)
