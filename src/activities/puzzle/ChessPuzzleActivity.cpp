@@ -101,28 +101,61 @@ void squareOrigin(const uint8_t sq, const bool whiteAtBottom, const int square, 
   y = kBoardTop + row * square;
 }
 
+// Last-move mark: an L in each corner, 2px black inside a 1px white line on the square's edge so it
+// never merges with the board border or a neighbouring square's frame. Stays within the 3px band
+// outside the piece box.
 void drawCorners(const GfxRenderer& renderer, const int x, const int y, const int size) {
-  const int far = size - kMarkWidth;
+  const int far = size - 1;
   const int armFar = size - kCornerArm;
-  renderer.fillRect(x, y, kCornerArm, kMarkWidth);
-  renderer.fillRect(x, y, kMarkWidth, kCornerArm);
-  renderer.fillRect(x + armFar, y, kCornerArm, kMarkWidth);
-  renderer.fillRect(x + far, y, kMarkWidth, kCornerArm);
-  renderer.fillRect(x, y + far, kCornerArm, kMarkWidth);
-  renderer.fillRect(x, y + armFar, kMarkWidth, kCornerArm);
-  renderer.fillRect(x + armFar, y + far, kCornerArm, kMarkWidth);
-  renderer.fillRect(x + far, y + armFar, kMarkWidth, kCornerArm);
+  // White outer line.
+  renderer.fillRect(x, y, kCornerArm, 1, false);
+  renderer.fillRect(x, y, 1, kCornerArm, false);
+  renderer.fillRect(x + armFar, y, kCornerArm, 1, false);
+  renderer.fillRect(x + far, y, 1, kCornerArm, false);
+  renderer.fillRect(x, y + far, kCornerArm, 1, false);
+  renderer.fillRect(x, y + armFar, 1, kCornerArm, false);
+  renderer.fillRect(x + armFar, y + far, kCornerArm, 1, false);
+  renderer.fillRect(x + far, y + armFar, 1, kCornerArm, false);
+  // Black L, 2px, just inside.
+  constexpr int kInk = kMarkWidth - 1;
+  const int inkFar = size - kMarkWidth;
+  renderer.fillRect(x + 1, y + 1, kCornerArm - 1, kInk);
+  renderer.fillRect(x + 1, y + 1, kInk, kCornerArm - 1);
+  renderer.fillRect(x + armFar, y + 1, kCornerArm - 1, kInk);
+  renderer.fillRect(x + inkFar, y + 1, kInk, kCornerArm - 1);
+  renderer.fillRect(x + 1, y + inkFar, kCornerArm - 1, kInk);
+  renderer.fillRect(x + 1, y + armFar, kInk, kCornerArm - 1);
+  renderer.fillRect(x + armFar, y + inkFar, kCornerArm - 1, kInk);
+  renderer.fillRect(x + inkFar, y + armFar, kInk, kCornerArm - 1);
 }
 
-// Dashed 3px frame: 6px on, 4px off, so it reads differently from the solid cursor.
-void drawDashedFrame(const GfxRenderer& renderer, const int x, const int y, const int size) {
-  for (int d = 0; d < size; d += 10) {
-    const int len = d + 6 <= size ? 6 : size - d;
-    renderer.fillRect(x + d, y, len, kMarkWidth);
-    renderer.fillRect(x + d, y + size - kMarkWidth, len, kMarkWidth);
-    renderer.fillRect(x, y + d, kMarkWidth, len);
-    renderer.fillRect(x + size - kMarkWidth, y + d, kMarkWidth, len);
+// Inverts a logical size x size square in the Portrait framebuffer by XOR-ing whole bytes.
+// Logical (x, y) maps to physical (phyX = y, phyY = panelHeight - 1 - x), so the square covers
+// physical rows panelHeight - x - size .. panelHeight - x - 1 and bits y .. y + size - 1 of each row.
+// Returns false (nothing drawn) when the framebuffer cannot be written directly.
+bool invertSquare(const GfxRenderer& renderer, const int x, const int y, const int size) {
+  if (renderer.getOrientation() != GfxRenderer::Portrait) return false;
+  uint8_t* frameBuffer = renderer.getFrameBuffer();
+  const int panelHeight = renderer.getDisplayHeight();
+  const int panelWidth = renderer.getDisplayWidth();
+  const int widthBytes = renderer.getDisplayWidthBytes();
+  if (frameBuffer == nullptr || renderer.getWriteTarget() != frameBuffer || renderer.getWriteRows() != panelHeight) {
+    return false;
   }
+  const int firstRow = panelHeight - x - size;
+  const int lastBit = y + size - 1;
+  if (x < 0 || y < 0 || firstRow < 0 || lastBit >= panelWidth) return false;
+
+  for (int row = 0; row < size; row++) {
+    uint8_t* line = frameBuffer + (firstRow + row) * widthBytes;
+    for (int byte = y >> 3; byte <= (lastBit >> 3); byte++) {
+      const int from = byte * 8 > y ? byte * 8 : y;
+      const int to = byte * 8 + 7 < lastBit ? byte * 8 + 7 : lastBit;
+      const uint8_t mask = static_cast<uint8_t>((0xFF >> (from & 7)) & (0xFF << (7 - (to & 7))));
+      line[byte] ^= mask;
+    }
+  }
+  return true;
 }
 
 pondemate::Dir toDir(const ChessPuzzleActivity::Action action) {
@@ -304,12 +337,6 @@ void ChessPuzzleActivity::updateCursorText() {
       snprintf(cursorText, sizeof(cursorText), "%s %s", kPieceNames[chess::pieceType(board.squares[cursor])], sq);
       break;
     case Phase::SelectDest: {
-      if (cursor == grabbed) {
-        squareName(grabbed, sq);
-        snprintf(cursorText, sizeof(cursorText), "%s %s - pick a square",
-                 kPieceNames[chess::pieceType(board.squares[grabbed])], sq);
-        break;
-      }
       chess::Move choices[4];
       if (session.promotionChoices(grabbed, cursor, choices) > 0) {
         session.displayText(choices[0], cursorText, sizeof(cursorText), true);
@@ -351,6 +378,7 @@ void ChessPuzzleActivity::handlePuzzle(const Action action) {
       } else if (action == Action::Ok) {
         grabbed = cursor;
         targetCount = session.destinations(grabbed, targets);
+        cursor = session.initialDestination(grabbed);
         phase = Phase::SelectDest;
         statusText[0] = '\0';
       }
@@ -573,25 +601,34 @@ void ChessPuzzleActivity::drawBoard(const chess::Position& board, const bool whi
     }
   }
 
+  // Grabbed piece: its square inverted, before the border so an edge square keeps a black border.
+  bool inverted = true;
+  if (marks && (phase == Phase::SelectDest || phase == Phase::SelectPromo)) {
+    int x, y;
+    squareOrigin(grabbed, whiteAtBottom, square, x, y);
+    inverted = invertSquare(renderer, x, y, square);
+    if (!inverted) LOG_ERR("CHESS", "cannot invert the grabbed square");
+  }
+
+  renderer.drawRect(0, kBoardTop, boardSize, boardSize, 2, true);
+
+  // Marks go last so their white edge line also shows on the border squares.
   if (marks) {
     int x, y;
     squareOrigin(session.lastFrom(), whiteAtBottom, square, x, y);
     drawCorners(renderer, x, y, square);
     squareOrigin(session.lastTo(), whiteAtBottom, square, x, y);
     drawCorners(renderer, x, y, square);
-    if (phase == Phase::SelectDest || phase == Phase::SelectPromo) {
+    if (!inverted) {
       squareOrigin(grabbed, whiteAtBottom, square, x, y);
-      drawDashedFrame(renderer, x, y, square);
+      renderer.drawRect(x, y, square, square, kMarkWidth, true);
     }
     if (phase == Phase::SelectPiece || phase == Phase::SelectDest || phase == Phase::SelectPromo) {
       squareOrigin(cursor, whiteAtBottom, square, x, y);
-      if (!(phase != Phase::SelectPiece && cursor == grabbed)) {
-        renderer.drawRect(x, y, square, square, kMarkWidth, true);
-      }
+      renderer.drawRect(x, y, square, square, kMarkWidth, true);
     }
   }
 
-  renderer.drawRect(0, kBoardTop, boardSize, boardSize, 2, true);
   if (fallbacks > 0) {
     LOG_INF("CHESS", "fallback per-pixel: %d pieces", fallbacks);
   }
@@ -661,9 +698,9 @@ void ChessPuzzleActivity::renderPuzzle() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int square = renderer.getScreenWidth() / 8;
   const bool whiteAtBottom = hasPuzzle ? session.playerIsWhite() : true;
-  const bool active = phase == Phase::SelectPiece || phase == Phase::SelectDest || phase == Phase::SelectPromo;
 
-  if (hasPuzzle) drawBoard(session.position(), whiteAtBottom, active);
+  // The last move stays marked after Solved / Set complete; the cursor only shows while choosing.
+  if (hasPuzzle) drawBoard(session.position(), whiteAtBottom, true);
 
   const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
   const int smallLineHeight = renderer.getLineHeight(UI_10_FONT_ID);
