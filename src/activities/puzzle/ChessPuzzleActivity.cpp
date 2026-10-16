@@ -281,13 +281,15 @@ void ChessPuzzleActivity::scanSets() {
     if (next > setTotals[i]) next = setTotals[i];
     setNext[i] = next;
   }
-  if (pickerIndex > setCount + 2) pickerIndex = 0;
+  if (pickerIndex > setCount + 3) pickerIndex = 0;
 }
 
 bool ChessPuzzleActivity::openPuzzle(const int set, const int index) {
   setIndex = set;
   puzzleIndex = index;
   hasPuzzle = false;
+  menuOpen = false;
+  hintCount = 0;
   statusText[0] = '\0';
   cursorText[0] = '\0';
 
@@ -309,7 +311,9 @@ bool ChessPuzzleActivity::openPuzzle(const int set, const int index) {
   return true;
 }
 
-void ChessPuzzleActivity::recordSolved() {
+// Moves the set's progress past the current puzzle and appends a log.txt line:
+// set, index, id, rating, mistakes, hints, result ("solved" or "skip").
+void ChessPuzzleActivity::recordResult(const char* result) {
   setNext[setIndex] = puzzleIndex + 1;
   Storage.mkdir(kProgressDir);
   char path[96];
@@ -319,8 +323,8 @@ void ChessPuzzleActivity::recordSolved() {
   writeSmallFile(path, text);
 
   char line[kLineBytes + kSetNameBytes];
-  const int len = snprintf(line, sizeof(line), "%s\t%d\t%s\t%d\t%d\n", setNames[setIndex], puzzleIndex, record.id,
-                           record.rating, session.mistakes());
+  const int len = snprintf(line, sizeof(line), "%s\t%d\t%s\t%d\t%d\t%d\t%s\n", setNames[setIndex], puzzleIndex,
+                           record.id, record.rating, session.mistakes(), hintCount, result);
   HalFile log = Storage.open(kLogPath, O_RDWR | O_CREAT);
   if (!log || !log.seek(log.fileSize()) || log.write(line, len) != static_cast<size_t>(len)) {
     LOG_ERR("PONDE", "Cannot append %s", kLogPath);
@@ -398,6 +402,11 @@ void ChessPuzzleActivity::handlePuzzle(const Action action) {
       targetCount = session.movablePieces(targets);
       cursor = grabbed;
       updateCursorText();
+      return;
+    }
+    if (phase == Phase::SelectPiece) {
+      menuOpen = true;
+      menuIndex = static_cast<int>(MenuItem::Resume);
       return;
     }
     mode = Mode::Picker;
@@ -490,14 +499,99 @@ void ChessPuzzleActivity::handlePuzzle(const Action action) {
       phase = Phase::Solved;
       cursorText[0] = '\0';
       snprintf(statusText, sizeof(statusText), "Solved! (mistakes: %d)  OK: next", session.mistakes());
-      recordSolved();
+      recordResult("solved");
       logDiag("solved");
       break;
   }
 }
 
+// Up/Down wrap, OK runs the item, Back is Resume.
+void ChessPuzzleActivity::handleMenu(const Action action) {
+  if (action == Action::Up) menuIndex = (menuIndex + kMenuItems - 1) % kMenuItems;
+  if (action == Action::Down) menuIndex = (menuIndex + 1) % kMenuItems;
+  if (action == Action::Back) {
+    menuOpen = false;
+    return;
+  }
+  if (action != Action::Ok) return;
+
+  menuOpen = false;
+  switch (static_cast<MenuItem>(menuIndex)) {
+    case MenuItem::Resume:
+      return;
+    case MenuItem::Hint: {
+      // The solution's piece only; the destination stays for the player to find.
+      chess::Move hint;
+      if (!session.expectedMove(hint)) return;
+      hintCount++;
+      cursor = hint.from;
+      char sq[3];
+      squareName(cursor, sq);
+      snprintf(cursorText, sizeof(cursorText), "Hint: %s %s",
+               kPieceNames[chess::pieceType(session.position().squares[cursor])], sq);
+      LOG_INF("PONDE", "hint %d on %s", hintCount, record.id);
+      return;
+    }
+    case MenuItem::Skip:
+      recordResult("skip");
+      LOG_INF("PONDE", "skip %s", record.id);
+      if (puzzleIndex + 1 >= setTotals[setIndex]) {
+        phase = Phase::Complete;
+        snprintf(statusText, sizeof(statusText), "Set complete");
+        cursorText[0] = '\0';
+      } else {
+        openPuzzle(setIndex, puzzleIndex + 1);
+        halfRefreshPending = true;
+      }
+      return;
+    case MenuItem::Sets:
+      mode = Mode::Picker;
+      scanSets();
+      return;
+  }
+}
+
+// Removes every *.txt under the progress directory, one directory scan per file so nothing is
+// removed while the directory is open. log.txt, settings.txt and the sets are not touched.
+void ChessPuzzleActivity::resetProgress() {
+  char name[64];
+  char path[96];
+  int removed = 0;
+  const size_t suffixLen = strlen(kSetSuffix);
+  for (int guard = 0; guard < 256; guard++) {
+    path[0] = '\0';
+    {
+      HalFile dir = Storage.open(kProgressDir);
+      if (!dir || !dir.isDirectory()) break;
+      for (HalFile entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
+        if (entry.isDirectory()) continue;
+        entry.getName(name, sizeof(name));
+        const size_t len = strlen(name);
+        if (len <= suffixLen || strcmp(name + len - suffixLen, kSetSuffix) != 0) continue;
+        snprintf(path, sizeof(path), "%s/%s", kProgressDir, name);
+        break;
+      }
+    }
+    if (path[0] == '\0') break;
+    if (!Storage.remove(path)) {
+      LOG_ERR("PONDE", "Cannot remove %s", path);
+      break;
+    }
+    removed++;
+  }
+  LOG_INF("PONDE", "reset progress: removed %d files", removed);
+}
+
 void ChessPuzzleActivity::handlePicker(const Action action) {
-  const int rows = setCount + 3;
+  if (confirmingReset) {
+    if (action == Action::Ok) {
+      resetProgress();
+      scanSets();
+    }
+    if (action == Action::Ok || action == Action::Back) confirmingReset = false;
+    return;
+  }
+  const int rows = setCount + 4;
   if (action == Action::Up) pickerIndex = pickerIndex > 0 ? pickerIndex - 1 : rows - 1;
   if (action == Action::Down) pickerIndex = pickerIndex + 1 < rows ? pickerIndex + 1 : 0;
   if (action != Action::Ok) return;
@@ -520,6 +614,8 @@ void ChessPuzzleActivity::handlePicker(const Action action) {
   } else if (pickerIndex == setCount + 1) {
     darkDither50 = !darkDither50;
     saveSettings();
+  } else if (pickerIndex == setCount + 2) {
+    confirmingReset = true;
   } else {
     mode = Mode::Debug;
     loadPosition(0);
@@ -618,7 +714,7 @@ void ChessPuzzleActivity::loop() {
   const Action action = readAction();
   if (action == Action::None) return;
 
-  if (mode == Mode::Picker && action == Action::Back) {
+  if (mode == Mode::Picker && action == Action::Back && !confirmingReset) {
     onGoHome();
     return;
   }
@@ -630,7 +726,11 @@ void ChessPuzzleActivity::loop() {
         handlePicker(action);
         break;
       case Mode::Puzzle:
-        handlePuzzle(action);
+        if (menuOpen) {
+          handleMenu(action);
+        } else {
+          handlePuzzle(action);
+        }
         break;
       case Mode::Debug:
         handleDebug(action);
@@ -756,12 +856,22 @@ void ChessPuzzleActivity::renderPicker() const {
   renderer.drawCenteredText(UI_12_FONT_ID, y, "PondeMate", true, EpdFontFamily::BOLD);
   y += rowHeight + metrics.verticalSpacing;
 
+  const int hintsY = renderer.getScreenHeight() - metrics.buttonHintsHeight - lineHeight - metrics.verticalSpacing;
+  if (confirmingReset) {
+    y += rowHeight * 2;
+    renderer.drawCenteredText(UI_12_FONT_ID, y, "Reset progress of all sets?", true, EpdFontFamily::BOLD);
+    y += rowHeight;
+    renderer.drawCenteredText(UI_12_FONT_ID, y, "OK: reset   Back: cancel");
+    drawHints("Cancel", "Reset", "", "", "", "", hintsY);
+    return;
+  }
+
   char line[kLineBytes + kSetNameBytes];
   if (setCount == 0) {
     renderer.drawText(UI_10_FONT_ID, left, y, "No puzzle sets in /pondemate/sets");
     y += rowHeight;
   }
-  const int rows = setCount + 3;
+  const int rows = setCount + 4;
   for (int i = 0; i < rows; i++) {
     if (i < setCount) {
       if (setNext[i] >= setTotals[i]) {
@@ -773,6 +883,8 @@ void ChessPuzzleActivity::renderPicker() const {
       snprintf(line, sizeof(line), "Buttons: %s", layout == Layout::Hjkl ? "hjkl" : "standard");
     } else if (i == setCount + 1) {
       snprintf(line, sizeof(line), "Debug: dither %d%%", darkDither50 ? 50 : 25);
+    } else if (i == setCount + 2) {
+      snprintf(line, sizeof(line), "Debug: reset progress");
     } else {
       snprintf(line, sizeof(line), "Debug: perft");
     }
@@ -782,7 +894,6 @@ void ChessPuzzleActivity::renderPicker() const {
     y += rowHeight;
   }
 
-  const int hintsY = renderer.getScreenHeight() - metrics.buttonHintsHeight - lineHeight - metrics.verticalSpacing;
   const bool onSet = pickerIndex < setCount;
   const char* ok = onSet ? "Start" : (pickerIndex <= setCount + 1 ? "Toggle" : "Open");
   drawHints("Home", ok, "Up", "Down", "", "", hintsY);
@@ -809,6 +920,25 @@ void ChessPuzzleActivity::renderPuzzle() const {
   renderer.drawCenteredText(UI_12_FONT_ID, y, line, true, EpdFontFamily::BOLD);
   y += lineHeight + metrics.verticalSpacing;
 
+  if (menuOpen) {
+    // The menu takes the place of the three text lines under the title.
+    const int area = lineHeight * 3 + smallLineHeight / 2;
+    const int rowHeight = area / kMenuItems;
+    const int fontId = renderer.getLineHeight(UI_12_FONT_ID) <= rowHeight ? UI_12_FONT_ID : UI_10_FONT_ID;
+    const int barWidth = renderer.getScreenWidth() / 2;
+    const int barX = (renderer.getScreenWidth() - barWidth) / 2;
+    const char* const items[kMenuItems] = {"Resume", "Hint", "Skip", "Sets"};
+    for (int i = 0; i < kMenuItems; i++) {
+      const bool selected = i == menuIndex;
+      if (selected) renderer.fillRect(barX, y - 1, barWidth, rowHeight, true);
+      renderer.drawCenteredText(fontId, y, items[i], !selected, selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
+      y += rowHeight;
+    }
+    y += area - rowHeight * kMenuItems;
+    drawHints("Resume", "Select", "Up", "Down", "", "", y);
+    return;
+  }
+
   if (hasPuzzle) {
     renderer.drawCenteredText(UI_12_FONT_ID, y, whiteAtBottom ? "White to move" : "Black to move");
   }
@@ -826,7 +956,7 @@ void ChessPuzzleActivity::renderPuzzle() const {
   }
   switch (phase) {
     case Phase::SelectPiece:
-      drawHints("Sets", "Grab", "Up", "Down", "Left", "Right", y);
+      drawHints("Menu", "Grab", "Up", "Down", "Left", "Right", y);
       break;
     case Phase::SelectDest:
       drawHints("Pieces", "Move", "Up", "Down", "Left", "Right", y);

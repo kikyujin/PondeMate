@@ -27,12 +27,14 @@ class ChessPuzzleActivity final : public Activity {
   Layout layout = Layout::Standard;
   bool darkDither50 = false;  // dark squares at 50% instead of 25%
 
-  // Set picker. Rows: the sets, then "Buttons", "Debug: dither", "Debug: perft".
+  // Set picker. Rows: the sets, then "Buttons", "Debug: dither", "Debug: reset progress",
+  // "Debug: perft".
   char setNames[kMaxSets][kSetNameBytes] = {};
   int setTotals[kMaxSets] = {};
   int setNext[kMaxSets] = {};
   int setCount = 0;
   int pickerIndex = 0;
+  bool confirmingReset = false;  // "Reset progress of all sets?" shown over the picker
 
   // Puzzle screen. ~1.9KB with the session; members because the loop task
   // stack is small and ChessCore already uses ~2KB of it.
@@ -50,6 +52,12 @@ class ChessPuzzleActivity final : public Activity {
   chess::Move promoChoices[4] = {};
   int promoCount = 0;
   int promoIndex = 0;
+  // Menu opened by Back while choosing a piece: Resume / Hint / Skip / Sets.
+  enum class MenuItem : uint8_t { Resume, Hint, Skip, Sets };
+  static constexpr int kMenuItems = 4;
+  bool menuOpen = false;
+  int menuIndex = 0;
+  int hintCount = 0;  // hints used on the current puzzle
   // After a correct move, the board with only the player's move is shown for a while before the
   // opponent's reply (already played in the session) appears. Input is ignored meanwhile.
   static constexpr unsigned long kReplyDelayMs = 1000;  // counted from the end of that refresh
@@ -98,7 +106,9 @@ class ChessPuzzleActivity final : public Activity {
   void handlePicker(Action action);
   void handlePuzzle(Action action);
   void handleDebug(Action action);
-  void recordSolved();
+  void recordResult(const char* result);
+  void resetProgress();
+  void handleMenu(Action action);
   void logDiag(const char* scene) const;
   void logRefresh();
 
