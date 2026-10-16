@@ -37,56 +37,58 @@ uint8_t snap(const uint8_t cur, const Dir d, const uint8_t* targets, const int n
   screenCell(cur, whiteAtBottom, c0, r0);
 
   if (d == Dir::Left || d == Dir::Right) {
-    const bool next = d == Dir::Right;
-    const int curOrder = r0 * 8 + c0;
-    int best = -1;
-    int bestOrder = next ? 64 : -1;
-    // Past the end of the reading order: the first target (Right) or the last (Left).
-    int wrap = -1;
-    int wrapOrder = next ? 64 : -1;
+    // Screen columns that hold a target, other than the cursor's own.
+    bool hasTarget[8] = {};
     for (int i = 0; i < n; ++i) {
       int c, r;
       screenCell(targets[i], whiteAtBottom, c, r);
-      const int order = r * 8 + c;
-      if (next ? (order > curOrder && order < bestOrder) : (order < curOrder && order > bestOrder)) {
-        bestOrder = order;
+      if (c != c0) hasTarget[c] = true;
+    }
+    // Walk the columns that way, wrapping past the edge.
+    const int step = d == Dir::Right ? 1 : 7;
+    int col = -1;
+    for (int k = 1; k < 8 && col < 0; ++k) {
+      const int c = (c0 + step * k) % 8;
+      if (hasTarget[c]) col = c;
+    }
+    if (col < 0) return cur;
+    // In that column, the target on the nearest row; a tie goes to the lower one on screen.
+    int best = -1;
+    int bestOff = 0, bestRow = 0;
+    for (int i = 0; i < n; ++i) {
+      int c, r;
+      screenCell(targets[i], whiteAtBottom, c, r);
+      if (c != col) continue;
+      const int off = absInt(r - r0);
+      if (best < 0 || off < bestOff || (off == bestOff && r > bestRow)) {
         best = targets[i];
-      }
-      if (order != curOrder && (next ? order < wrapOrder : order > wrapOrder)) {
-        wrapOrder = order;
-        wrap = targets[i];
+        bestOff = off;
+        bestRow = r;
       }
     }
-    if (best < 0) best = wrap;
-    return best < 0 ? cur : static_cast<uint8_t>(best);
+    return static_cast<uint8_t>(best);
   }
 
-  // First pass: targets that way. Second pass, only when there are none: the rows on the other
-  // side, counted as if the board continued past the edge (8 rows on). The cursor's own row never
-  // counts; Left/Right cover it.
-  int best = -1;
-  int bestScore = 0, bestMain = 0, bestSide = 0;
-  for (int pass = 0; pass < 2 && best < 0; ++pass) {
-    for (int i = 0; i < n; ++i) {
-      if (targets[i] == cur) continue;
-      int c, r;
-      screenCell(targets[i], whiteAtBottom, c, r);
-      int along = d == Dir::Up ? r0 - r : r - r0;
-      if (pass == 0 ? along <= 0 : along >= 0) continue;
-      if (pass == 1) along += 8;
-      const int side = absInt(c - c0);
-      const int score = along + 2 * side;
-      const bool better = best < 0 || score < bestScore || (score == bestScore && along < bestMain) ||
-                          (score == bestScore && along == bestMain && side < bestSide) ||
-                          (score == bestScore && along == bestMain && side == bestSide && targets[i] < best);
-      if (better) {
+  // Up/Down: the next target in the cursor's column that way, wrapping to the far end.
+  const bool up = d == Dir::Up;
+  int best = -1, bestRow = 0;
+  int wrap = -1, wrapRow = 0;
+  for (int i = 0; i < n; ++i) {
+    if (targets[i] == cur) continue;
+    int c, r;
+    screenCell(targets[i], whiteAtBottom, c, r);
+    if (c != c0 || r == r0) continue;
+    if (up ? r < r0 : r > r0) {
+      if (best < 0 || (up ? r > bestRow : r < bestRow)) {
         best = targets[i];
-        bestScore = score;
-        bestMain = along;
-        bestSide = side;
+        bestRow = r;
       }
+    } else if (wrap < 0 || (up ? r > wrapRow : r < wrapRow)) {
+      wrap = targets[i];
+      wrapRow = r;
     }
   }
+  if (best < 0) best = wrap;
   return best < 0 ? cur : static_cast<uint8_t>(best);
 }
 

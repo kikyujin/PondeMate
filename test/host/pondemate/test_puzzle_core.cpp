@@ -83,6 +83,15 @@ struct SetStats {
   long pressesTried = 0;
   long stuckNow = 0;
   long stuckOld = 0;
+  // Turns where the current rule needs more / fewer presses than the 10/14 008 rule.
+  int moreThanOld = 0;
+  int fewerThanOld = 0;
+  int worstDelta = 0;
+  char worstId[pondemate::kMaxIdChars + 1] = "";
+  int worstPly = 0;
+  int worstNow = 0;
+  int worstOld = 0;
+  char worstKeys[256] = "";
 };
 
 chess::Move cands[chess::kMaxMoves];
@@ -163,8 +172,8 @@ struct Reach {
 
 using SnapFn = uint8_t (*)(uint8_t, Dir, const uint8_t*, int, bool);
 
-// The 007-008 rule, kept here as the reference: no wrap-around, stays put when
-// nothing lies that way.
+// The 10/14 008 rule (snap toward the nearest target, no wrap-around), kept for
+// comparing press counts.
 uint8_t snapNoWrap(const uint8_t cur, const Dir d, const uint8_t* targets, const int n, const bool whiteAtBottom) {
   int c0, r0;
   cellOf(cur, whiteAtBottom, c0, r0);
@@ -205,46 +214,84 @@ uint8_t snapNoWrap(const uint8_t cur, const Dir d, const uint8_t* targets, const
   return best < 0 ? cur : static_cast<uint8_t>(best);
 }
 
-// Checks one wrap-aware step against the no-wrap reference: where the reference
-// moves, snap() must make the same move; where it stays, snap() wraps to the far
-// end (Left/Right) or to a row on the other side (Up/Down), or stays only when
-// there is no such target. Counts presses that stay put, now and with the reference.
+// Checks one step against the file-then-square rule, worked out here from the
+// screen cells: Left/Right go to the next column that way holding a target
+// (wrapping), onto the target nearest the current row (the lower one on a tie);
+// Up/Down go to the next target that way in the same column (wrapping). Staying
+// put is only allowed when no other column (Left/Right) or no other target in
+// the column (Up/Down) exists. Counts presses that stay put, now and with the
+// 10/14 rule (snapNoWrap).
 void checkStep(const uint8_t cur, const Dir d, const uint8_t next, const uint8_t* targets, const int n,
                const bool whiteAtBottom, SetStats& stats, const char* set, const char* id) {
-  const uint8_t old = snapNoWrap(cur, d, targets, n, whiteAtBottom);
   stats.pressesTried++;
-  if (old == cur) stats.stuckOld++;
+  if (snapNoWrap(cur, d, targets, n, whiteAtBottom) == cur) stats.stuckOld++;
   if (next == cur) stats.stuckNow++;
-  if (old != cur) {
-    if (next != old) fail(set, id, "snap changed a move that needs no wrap-around");
-    return;
-  }
+
   int c0, r0;
   cellOf(cur, whiteAtBottom, c0, r0);
-  int others = 0;
-  int otherRows = 0;
-  int wrapOrder = d == Dir::Right ? 64 : -1;
-  for (int i = 0; i < n; ++i) {
-    if (targets[i] == cur) continue;
-    int c, r;
-    cellOf(targets[i], whiteAtBottom, c, r);
-    others++;
-    if (r != r0) otherRows++;
-    const int order = r * 8 + c;
-    if (d == Dir::Right ? order < wrapOrder : order > wrapOrder) wrapOrder = order;
-  }
-  if (next == cur) {
-    const bool justified = others == 0 || ((d == Dir::Up || d == Dir::Down) && otherRows == 0);
-    if (!justified) fail(set, id, "snap stayed put with a target to wrap to");
-    return;
-  }
-  int c1, r1;
-  cellOf(next, whiteAtBottom, c1, r1);
+  int col[64], row[64];
+  for (int i = 0; i < n; ++i) cellOf(targets[i], whiteAtBottom, col[i], row[i]);
+
+  int want = -1;
   if (d == Dir::Left || d == Dir::Right) {
-    if (r1 * 8 + c1 != wrapOrder) fail(set, id, "left/right wrap did not go to the far end of the reading order");
-  } else if (!((d == Dir::Up && r1 > r0) || (d == Dir::Down && r1 < r0))) {
-    fail(set, id, "up/down wrap did not go to the other side");
+    // Nearest column that way, else the far column on the other side.
+    int nearCol = -1, farCol = -1;
+    for (int i = 0; i < n; ++i) {
+      const int c = col[i];
+      if (c == c0) continue;
+      const bool ahead = d == Dir::Right ? c > c0 : c < c0;
+      if (ahead) {
+        if (nearCol < 0 || (d == Dir::Right ? c < nearCol : c > nearCol)) nearCol = c;
+      } else if (farCol < 0 || (d == Dir::Right ? c < farCol : c > farCol)) {
+        farCol = c;
+      }
+    }
+    const int target = nearCol >= 0 ? nearCol : farCol;
+    if (target >= 0) {
+      int bestOff = 99, bestRow = -1;
+      for (int i = 0; i < n; ++i) {
+        if (col[i] != target) continue;
+        const int off = row[i] > r0 ? row[i] - r0 : r0 - row[i];
+        if (off < bestOff || (off == bestOff && row[i] > bestRow)) {
+          bestOff = off;
+          bestRow = row[i];
+          want = targets[i];
+        }
+      }
+    }
+    if (next != cur) {
+      int c1, r1;
+      cellOf(next, whiteAtBottom, c1, r1);
+      if (c1 == c0) fail(set, id, "left/right stayed in the same column");
+    } else if (target >= 0) {
+      fail(set, id, "left/right stayed put with another column holding a target");
+    }
+  } else {
+    const bool up = d == Dir::Up;
+    int nearRow = -1, farRow = -1;
+    for (int i = 0; i < n; ++i) {
+      if (targets[i] == cur || col[i] != c0 || row[i] == r0) continue;
+      const int r = row[i];
+      if (up ? r < r0 : r > r0) {
+        if (nearRow < 0 || (up ? r > nearRow : r < nearRow)) nearRow = r;
+      } else if (farRow < 0 || (up ? r > farRow : r < farRow)) {
+        farRow = r;
+      }
+    }
+    const int target = nearRow >= 0 ? nearRow : farRow;
+    for (int i = 0; i < n && target >= 0; ++i) {
+      if (col[i] == c0 && row[i] == target) want = targets[i];
+    }
+    if (next != cur) {
+      int c1, r1;
+      cellOf(next, whiteAtBottom, c1, r1);
+      if (c1 != c0) fail(set, id, "up/down left the column");
+    } else if (target >= 0) {
+      fail(set, id, "up/down stayed put with another target in the column");
+    }
   }
+  if (want < 0) want = cur;
+  if (next != want) fail(set, id, "snap differs from the file-then-square rule");
 }
 
 // Breadth-first search over `step` moves from `start` through `targets`. With
@@ -509,6 +556,18 @@ void runPuzzle(const char* set, const char* line, SetStats& stats, const bool sh
     const int snapPresses = cursorTurn(session, legal, cands[expectedIndex], set, id, stats, keys, sizeof(keys),
                                        &oldPresses, &startHit);
     if (startHit) stats.startHits++;
+    if (oldPresses >= 0 && snapPresses >= 0) {
+      if (snapPresses > oldPresses) stats.moreThanOld++;
+      if (snapPresses < oldPresses) stats.fewerThanOld++;
+      if (snapPresses - oldPresses > stats.worstDelta) {
+        stats.worstDelta = snapPresses - oldPresses;
+        snprintf(stats.worstId, sizeof(stats.worstId), "%s", id);
+        stats.worstPly = ply;
+        stats.worstNow = snapPresses;
+        stats.worstOld = oldPresses;
+        snprintf(stats.worstKeys, sizeof(stats.worstKeys), "%s", keys);
+      }
+    }
     if (oldPresses >= 0) {
       stats.oldSum += oldPresses;
       if (oldPresses > stats.oldMax) stats.oldMax = oldPresses;
@@ -526,18 +585,30 @@ void runPuzzle(const char* set, const char* line, SetStats& stats, const bool sh
     if (show) {
       if (!session.playerIsWhite() || ply == 1) printDirections(session);
       if (ply == 1 && strcmp(id, "d7yAE") == 0) {
-        uint8_t movable[64];
-        const int nm = session.movablePieces(movable);
+        // B-4-6: grab the queen on h5, then one press each way from the starting destination.
         constexpr uint8_t kH5 = 39;
-        const uint8_t next = pondemate::snap(kH5, Dir::Up, movable, nm, session.playerIsWhite());
-        char to[3];
-        squareName(next, to);
-        printf("    d7yAE: h5 up -> %s (008: %s)\n", to,
-               snapNoWrap(kH5, Dir::Up, movable, nm, session.playerIsWhite()) == kH5 ? "no move" : "moved");
+        uint8_t targets[64];
+        const int nd = session.destinations(kH5, targets);
+        const uint8_t first = session.initialDestination(kH5);
+        char from[3];
+        squareName(first, from);
+        printf("    d7yAE: grab h5, destination cursor starts on %s; one press from there:", from);
+        for (const Dir d : kDirs) {
+          char to[3];
+          squareName(pondemate::snap(first, d, targets, nd, session.playerIsWhite()), to);
+          printf(" %s->%s", dirName(d), to);
+        }
+        printf("\n      destinations:");
+        for (int i = 0; i < nd; ++i) {
+          char sqName[3];
+          squareName(targets[i], sqName);
+          printf(" %s", sqName);
+        }
+        printf("\n");
       }
       char sq[3];
       squareName(session.initialCursor(), sq);
-      printf("    snap cursor: start %s, %d presses (008: %d, list: %d). standard keys: %s\n", sq, snapPresses,
+      printf("    snap cursor: start %s, %d presses (10/14 008: %d, list: %d). standard keys: %s\n", sq, snapPresses,
              oldPresses, listPresses, keys);
       if (ply == 1) {
         // A cheap wrong (non-mating, not expected) move for the simulator run.
@@ -618,13 +689,18 @@ int runSet(const char* dir, const char* name) {
          stats.puzzles, stats.failed, stats.turns, stats.altMatePositions, stats.altMateMoves);
   const char* buckets[8] = {"0-4", "5-8", "9-12", "13-16", "17-20", "21-24", "25-28", "29+"};
   const double turns = stats.turns ? static_cast<double>(stats.turns) : 1.0;
-  printf("  presses per player move: now %.2f (max %d), 008 %.2f (max %d), 006 list %.2f (max %d); unreachable %d\n",
+  printf("  presses per player move: now %.2f (max %d), 10/14 008 %.2f (max %d), 006 list %.2f (max %d); unreachable %d\n",
          stats.snapSum / turns, stats.snapMax, stats.oldSum / turns, stats.oldMax, stats.listSum / turns,
          stats.listMax, stats.unreachable);
   printf("  destination cursor starts on the answer: %d of %d turns (%.1f%%)\n", stats.startHits, stats.turns,
          100.0 * stats.startHits / turns);
-  printf("  presses that stay put: now %ld, 008 %ld, of %ld (every target square x 4 directions)\n", stats.stuckNow,
+  printf("  presses that stay put: now %ld, 10/14 008 %ld, of %ld (every target square x 4 directions)\n", stats.stuckNow,
          stats.stuckOld, stats.pressesTried);
+  printf("  turns needing more presses than 10/14 008: %d, fewer: %d\n", stats.moreThanOld, stats.fewerThanOld);
+  if (stats.worstDelta > 0) {
+    printf("  largest increase: %s ply %d, %d presses (10/14 008: %d). standard keys: %s\n", stats.worstId,
+           stats.worstPly, stats.worstNow, stats.worstOld, stats.worstKeys);
+  }
   printf("    presses    now    008   list\n");
   for (int i = 0; i < 8; ++i) {
     printf("    %-7s %6d %6d %6d\n", buckets[i], stats.snapHist[i], stats.oldHist[i], stats.listHist[i]);

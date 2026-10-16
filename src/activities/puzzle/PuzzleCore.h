@@ -39,15 +39,12 @@ enum class Dir : uint8_t { Up, Down, Left, Right };
 
 // Snap-cursor step from square `cur` among `targets`, directions as drawn on
 // screen (whiteAtBottom = false means the board is flipped, black at the bottom).
-// Up/Down: the target above/below with the smallest "rows moved + 2 * columns
-// off"; ties go to fewer rows, then fewer columns, then the lower square. When
-// nothing lies that way, the same rule over the rows on the other side, counting
-// rows past the board edge (row distance + 8); targets on the cursor's own row
-// are never chosen.
-// Left/Right: the previous/next target in screen reading order (rows top to
-// bottom, each left to right), wrapping from the last to the first and back, so
-// every target stays reachable even when Up/Down would always prefer a neighbour.
-// Returns `cur` when there is nowhere to go.
+// Left/Right pick a file: the next screen column that way holding a target,
+// wrapping past the edge, landing on its target nearest the cursor's row (a tie
+// goes to the lower one on screen). Up/Down pick a square in the cursor's
+// column: the next target that way, wrapping to the far end of the column.
+// Returns `cur` when there is nowhere to go (no other column with a target for
+// Left/Right, no other target in the column for Up/Down).
 uint8_t snap(uint8_t cur, Dir d, const uint8_t* targets, int n, bool whiteAtBottom);
 
 enum class PlayResult : uint8_t {
