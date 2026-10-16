@@ -67,9 +67,14 @@ class ChessPuzzleActivity final : public Activity {
   uint64_t perftNodes = 0;
   uint32_t perftMs = 0;
 
+  // The next render uses HALF_REFRESH so the previous screen does not linger; set when the
+  // screen kind changes (and on entry, and on moving to the next puzzle), cleared by render().
+  bool halfRefreshPending = false;
+
   // Diagnostics. render() fills these; loop() logs them.
   uint32_t renderStackHW = 0;  // bytes (StackType_t is uint8_t on ESP32)
   uint32_t refreshMs = 0;
+  bool refreshWasHalf = false;
   volatile uint32_t renderSeq = 0;
   uint32_t loggedRenderSeq = 0;
 

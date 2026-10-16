@@ -342,12 +342,14 @@ void ChessPuzzleActivity::logDiag(const char* scene) const {
 void ChessPuzzleActivity::logRefresh() {
   if (renderSeq == loggedRenderSeq) return;
   uint32_t ms;
+  bool half;
   {
     RenderLock lock(*this);
     loggedRenderSeq = renderSeq;
     ms = refreshMs;
+    half = refreshWasHalf;
   }
-  LOG_INF("PONDE", "refresh fast ms=%lu", static_cast<unsigned long>(ms));
+  LOG_INF("PONDE", "refresh %s ms=%lu", half ? "half" : "fast", static_cast<unsigned long>(ms));
 }
 
 // ---------------------------------------------------------------------------
@@ -450,6 +452,7 @@ void ChessPuzzleActivity::handlePuzzle(const Action action) {
         cursorText[0] = '\0';
       } else {
         openPuzzle(setIndex, puzzleIndex + 1);
+        halfRefreshPending = true;
       }
       return;
 
@@ -486,8 +489,8 @@ void ChessPuzzleActivity::handlePuzzle(const Action action) {
 
 void ChessPuzzleActivity::handlePicker(const Action action) {
   const int rows = setCount + 3;
-  if (action == Action::Up && pickerIndex > 0) pickerIndex--;
-  if (action == Action::Down && pickerIndex + 1 < rows) pickerIndex++;
+  if (action == Action::Up) pickerIndex = pickerIndex > 0 ? pickerIndex - 1 : rows - 1;
+  if (action == Action::Down) pickerIndex = pickerIndex + 1 < rows ? pickerIndex + 1 : 0;
   if (action != Action::Ok) return;
 
   if (pickerIndex < setCount) {
@@ -580,6 +583,7 @@ void ChessPuzzleActivity::onEnter() {
   Activity::onEnter();
   loadSettings();
   scanSets();
+  halfRefreshPending = true;
   requestUpdateAndWait();
   logDiag("picker");
 }
@@ -608,6 +612,7 @@ void ChessPuzzleActivity::loop() {
         break;
     }
     if (mode != before) {
+      halfRefreshPending = true;
       if (before == Mode::Puzzle) logDiag("exit");
       if (mode == Mode::Puzzle) logDiag("enter");
       if (mode == Mode::Picker) logDiag("picker");
@@ -870,9 +875,12 @@ void ChessPuzzleActivity::render(RenderLock&&) {
       renderDebug();
       break;
   }
+  const bool half = halfRefreshPending;
+  halfRefreshPending = false;
   const unsigned long refreshStart = millis();
-  renderer.displayBuffer();
+  renderer.displayBuffer(half ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
   refreshMs = static_cast<uint32_t>(millis() - refreshStart);
+  refreshWasHalf = half;
   renderStackHW = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
   renderSeq = renderSeq + 1;
 }
