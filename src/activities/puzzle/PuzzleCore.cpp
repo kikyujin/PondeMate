@@ -37,39 +37,54 @@ uint8_t snap(const uint8_t cur, const Dir d, const uint8_t* targets, const int n
   screenCell(cur, whiteAtBottom, c0, r0);
 
   if (d == Dir::Left || d == Dir::Right) {
+    const bool next = d == Dir::Right;
     const int curOrder = r0 * 8 + c0;
     int best = -1;
-    int bestOrder = d == Dir::Right ? 64 : -1;
+    int bestOrder = next ? 64 : -1;
+    // Past the end of the reading order: the first target (Right) or the last (Left).
+    int wrap = -1;
+    int wrapOrder = next ? 64 : -1;
     for (int i = 0; i < n; ++i) {
       int c, r;
       screenCell(targets[i], whiteAtBottom, c, r);
       const int order = r * 8 + c;
-      if (d == Dir::Right ? (order > curOrder && order < bestOrder) : (order < curOrder && order > bestOrder)) {
+      if (next ? (order > curOrder && order < bestOrder) : (order < curOrder && order > bestOrder)) {
         bestOrder = order;
         best = targets[i];
       }
+      if (order != curOrder && (next ? order < wrapOrder : order > wrapOrder)) {
+        wrapOrder = order;
+        wrap = targets[i];
+      }
     }
+    if (best < 0) best = wrap;
     return best < 0 ? cur : static_cast<uint8_t>(best);
   }
 
+  // First pass: targets that way. Second pass, only when there are none: the rows on the other
+  // side, counted as if the board continued past the edge (8 rows on). The cursor's own row never
+  // counts; Left/Right cover it.
   int best = -1;
   int bestScore = 0, bestMain = 0, bestSide = 0;
-  for (int i = 0; i < n; ++i) {
-    if (targets[i] == cur) continue;
-    int c, r;
-    screenCell(targets[i], whiteAtBottom, c, r);
-    const int along = d == Dir::Up ? r0 - r : r - r0;
-    const int side = absInt(c - c0);
-    if (along <= 0) continue;
-    const int score = along + 2 * side;
-    const bool better = best < 0 || score < bestScore || (score == bestScore && along < bestMain) ||
-                        (score == bestScore && along == bestMain && side < bestSide) ||
-                        (score == bestScore && along == bestMain && side == bestSide && targets[i] < best);
-    if (better) {
-      best = targets[i];
-      bestScore = score;
-      bestMain = along;
-      bestSide = side;
+  for (int pass = 0; pass < 2 && best < 0; ++pass) {
+    for (int i = 0; i < n; ++i) {
+      if (targets[i] == cur) continue;
+      int c, r;
+      screenCell(targets[i], whiteAtBottom, c, r);
+      int along = d == Dir::Up ? r0 - r : r - r0;
+      if (pass == 0 ? along <= 0 : along >= 0) continue;
+      if (pass == 1) along += 8;
+      const int side = absInt(c - c0);
+      const int score = along + 2 * side;
+      const bool better = best < 0 || score < bestScore || (score == bestScore && along < bestMain) ||
+                          (score == bestScore && along == bestMain && side < bestSide) ||
+                          (score == bestScore && along == bestMain && side == bestSide && targets[i] < best);
+      if (better) {
+        best = targets[i];
+        bestScore = score;
+        bestMain = along;
+        bestSide = side;
+      }
     }
   }
   return best < 0 ? cur : static_cast<uint8_t>(best);

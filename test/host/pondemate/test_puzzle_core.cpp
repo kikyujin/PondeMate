@@ -74,11 +74,15 @@ struct SetStats {
   int snapHist[8] = {};  // 0-4, 5-8, 9-12, 13-16, 17-20, 21-24, 25-28, 29+
   int listHist[8] = {};
   int unreachable = 0;
-  // 007: destination cursor started on the grabbed square.
+  // 008: the same start squares, snap without wrap-around.
   long oldSum = 0;
   int oldMax = 0;
   int oldHist[8] = {};
   int startHits = 0;
+  // Presses that leave the cursor where it is, over every target square and direction.
+  long pressesTried = 0;
+  long stuckNow = 0;
+  long stuckOld = 0;
 };
 
 chess::Move cands[chess::kMaxMoves];
@@ -157,10 +161,96 @@ struct Reach {
   Dir via[64];
 };
 
-// Breadth-first search over snap steps from `start` through `targets`; also
-// checks every step moves the way the button points on screen.
+using SnapFn = uint8_t (*)(uint8_t, Dir, const uint8_t*, int, bool);
+
+// The 007-008 rule, kept here as the reference: no wrap-around, stays put when
+// nothing lies that way.
+uint8_t snapNoWrap(const uint8_t cur, const Dir d, const uint8_t* targets, const int n, const bool whiteAtBottom) {
+  int c0, r0;
+  cellOf(cur, whiteAtBottom, c0, r0);
+  int best = -1;
+  if (d == Dir::Left || d == Dir::Right) {
+    const int curOrder = r0 * 8 + c0;
+    int bestOrder = d == Dir::Right ? 64 : -1;
+    for (int i = 0; i < n; ++i) {
+      int c, r;
+      cellOf(targets[i], whiteAtBottom, c, r);
+      const int order = r * 8 + c;
+      if (d == Dir::Right ? (order > curOrder && order < bestOrder) : (order < curOrder && order > bestOrder)) {
+        bestOrder = order;
+        best = targets[i];
+      }
+    }
+    return best < 0 ? cur : static_cast<uint8_t>(best);
+  }
+  int bestScore = 0, bestMain = 0, bestSide = 0;
+  for (int i = 0; i < n; ++i) {
+    if (targets[i] == cur) continue;
+    int c, r;
+    cellOf(targets[i], whiteAtBottom, c, r);
+    const int along = d == Dir::Up ? r0 - r : r - r0;
+    const int side = c > c0 ? c - c0 : c0 - c;
+    if (along <= 0) continue;
+    const int score = along + 2 * side;
+    const bool better = best < 0 || score < bestScore || (score == bestScore && along < bestMain) ||
+                        (score == bestScore && along == bestMain && side < bestSide) ||
+                        (score == bestScore && along == bestMain && side == bestSide && targets[i] < best);
+    if (better) {
+      best = targets[i];
+      bestScore = score;
+      bestMain = along;
+      bestSide = side;
+    }
+  }
+  return best < 0 ? cur : static_cast<uint8_t>(best);
+}
+
+// Checks one wrap-aware step against the no-wrap reference: where the reference
+// moves, snap() must make the same move; where it stays, snap() wraps to the far
+// end (Left/Right) or to a row on the other side (Up/Down), or stays only when
+// there is no such target. Counts presses that stay put, now and with the reference.
+void checkStep(const uint8_t cur, const Dir d, const uint8_t next, const uint8_t* targets, const int n,
+               const bool whiteAtBottom, SetStats& stats, const char* set, const char* id) {
+  const uint8_t old = snapNoWrap(cur, d, targets, n, whiteAtBottom);
+  stats.pressesTried++;
+  if (old == cur) stats.stuckOld++;
+  if (next == cur) stats.stuckNow++;
+  if (old != cur) {
+    if (next != old) fail(set, id, "snap changed a move that needs no wrap-around");
+    return;
+  }
+  int c0, r0;
+  cellOf(cur, whiteAtBottom, c0, r0);
+  int others = 0;
+  int otherRows = 0;
+  int wrapOrder = d == Dir::Right ? 64 : -1;
+  for (int i = 0; i < n; ++i) {
+    if (targets[i] == cur) continue;
+    int c, r;
+    cellOf(targets[i], whiteAtBottom, c, r);
+    others++;
+    if (r != r0) otherRows++;
+    const int order = r * 8 + c;
+    if (d == Dir::Right ? order < wrapOrder : order > wrapOrder) wrapOrder = order;
+  }
+  if (next == cur) {
+    const bool justified = others == 0 || ((d == Dir::Up || d == Dir::Down) && otherRows == 0);
+    if (!justified) fail(set, id, "snap stayed put with a target to wrap to");
+    return;
+  }
+  int c1, r1;
+  cellOf(next, whiteAtBottom, c1, r1);
+  if (d == Dir::Left || d == Dir::Right) {
+    if (r1 * 8 + c1 != wrapOrder) fail(set, id, "left/right wrap did not go to the far end of the reading order");
+  } else if (!((d == Dir::Up && r1 > r0) || (d == Dir::Down && r1 < r0))) {
+    fail(set, id, "up/down wrap did not go to the other side");
+  }
+}
+
+// Breadth-first search over `step` moves from `start` through `targets`. With
+// `stats`, every step is also checked against the pressed direction (checkStep).
 void explore(const uint8_t start, const uint8_t* targets, const int n, const bool whiteAtBottom, Reach& r,
-             const char* set, const char* id) {
+             const char* set, const char* id, const SnapFn step = pondemate::snap, SetStats* stats = nullptr) {
   for (int i = 0; i < 64; ++i) r.dist[i] = r.parent[i] = -1;
   int queue[64];
   int head = 0, tail = 0;
@@ -169,18 +259,12 @@ void explore(const uint8_t start, const uint8_t* targets, const int n, const boo
   while (head < tail) {
     const uint8_t cur = static_cast<uint8_t>(queue[head++]);
     for (const Dir d : kDirs) {
-      const uint8_t next = pondemate::snap(cur, d, targets, n, whiteAtBottom);
+      const uint8_t next = step(cur, d, targets, n, whiteAtBottom);
+      if (stats != nullptr) checkStep(cur, d, next, targets, n, whiteAtBottom, *stats, set, id);
       if (next == cur) continue;
       bool isTarget = false;
       for (int i = 0; i < n; ++i) isTarget = isTarget || targets[i] == next;
       if (!isTarget) fail(set, id, "snap left the target set");
-      int c0, r0, c1, r1;
-      cellOf(cur, whiteAtBottom, c0, r0);
-      cellOf(next, whiteAtBottom, c1, r1);
-      // Up/Down change the screen row; Left/Right step through screen reading order.
-      const bool ok = (d == Dir::Up && r1 < r0) || (d == Dir::Down && r1 > r0) ||
-                      (d == Dir::Left && r1 * 8 + c1 < r0 * 8 + c0) || (d == Dir::Right && r1 * 8 + c1 > r0 * 8 + c0);
-      if (!ok) fail(set, id, "snap moved against the pressed direction");
       if (r.dist[next] < 0) {
         r.dist[next] = r.dist[cur] + 1;
         r.parent[next] = cur;
@@ -216,8 +300,8 @@ bool sameSet(const uint8_t* got, const int n, const bool* want) {
 // Checks the snap-cursor helpers at one player turn and returns the presses
 // needed to enter `move`; fills `keys` with the simulator key sequence.
 // Destination selection starts on initialDestination(); `oldPresses` is the
-// 007 count with the cursor starting on the grabbed square, `startHit` whether
-// the starting destination already is `move.to`.
+// 008 count (same starts, snap without wrap-around), `startHit` whether the
+// starting destination already is `move.to`.
 int cursorTurn(const PuzzleSession& session, const chess::MoveList& legalMoves, const chess::Move& move,
                const char* set, const char* id, SetStats& stats, char* keys, const size_t keysLen,
                int* oldPresses = nullptr, bool* startHit = nullptr) {
@@ -231,7 +315,9 @@ int cursorTurn(const PuzzleSession& session, const chess::MoveList& legalMoves, 
   const uint8_t start = session.initialCursor();
   if (!fromWanted[start]) fail(set, id, "initialCursor is not a movable piece");
   static Reach pieces;
-  explore(start, movable, nm, wb, pieces, set, id);
+  static Reach oldPieces;
+  explore(start, movable, nm, wb, pieces, set, id, pondemate::snap, &stats);
+  explore(start, movable, nm, wb, oldPieces, set, id, snapNoWrap);
   for (int i = 0; i < nm; ++i) {
     if (pieces.dist[movable[i]] < 0) {
       char a[3], b[3];
@@ -245,7 +331,7 @@ int cursorTurn(const PuzzleSession& session, const chess::MoveList& legalMoves, 
   }
 
   static Reach dest;
-  static Reach fromGrabbed;
+  static Reach oldDest;
   int destPresses = -1;
   int oldDestPresses = -1;
   for (int i = 0; i < nm; ++i) {
@@ -258,7 +344,7 @@ int cursorTurn(const PuzzleSession& session, const chess::MoveList& legalMoves, 
     if (!sameSet(targets, nd, toWanted)) fail(set, id, "destinations != legal destinations");
     const uint8_t first = session.initialDestination(movable[i]);
     if (!toWanted[first]) fail(set, id, "initialDestination is not a destination");
-    explore(first, targets, nd, wb, dest, set, id);
+    explore(first, targets, nd, wb, dest, set, id, pondemate::snap, &stats);
     for (int k = 0; k < nd; ++k) {
       if (dest.dist[targets[k]] < 0) {
         char a[3], b[3];
@@ -272,8 +358,8 @@ int cursorTurn(const PuzzleSession& session, const chess::MoveList& legalMoves, 
     }
     if (movable[i] == move.from) {
       destPresses = dest.dist[move.to];
-      explore(movable[i], targets, nd, wb, fromGrabbed, set, id);
-      oldDestPresses = fromGrabbed.dist[move.to];
+      explore(first, targets, nd, wb, oldDest, set, id, snapNoWrap);
+      oldDestPresses = oldDest.dist[move.to];
       if (startHit != nullptr) *startHit = first == move.to;
       if (keys != nullptr) {
         keys[0] = '\0';
@@ -307,7 +393,9 @@ int cursorTurn(const PuzzleSession& session, const chess::MoveList& legalMoves, 
 
   if (pieces.dist[move.from] < 0 || destPresses < 0) return -1;
   if (oldPresses != nullptr) {
-    *oldPresses = oldDestPresses < 0 ? -1 : pieces.dist[move.from] + 1 + oldDestPresses + 1 + promoPresses;
+    *oldPresses = oldDestPresses < 0 || oldPieces.dist[move.from] < 0
+                      ? -1
+                      : oldPieces.dist[move.from] + 1 + oldDestPresses + 1 + promoPresses;
   }
   return pieces.dist[move.from] + 1 + destPresses + 1 + promoPresses;
 }
@@ -437,9 +525,19 @@ void runPuzzle(const char* set, const char* line, SetStats& stats, const bool sh
     }
     if (show) {
       if (!session.playerIsWhite() || ply == 1) printDirections(session);
+      if (ply == 1 && strcmp(id, "d7yAE") == 0) {
+        uint8_t movable[64];
+        const int nm = session.movablePieces(movable);
+        constexpr uint8_t kH5 = 39;
+        const uint8_t next = pondemate::snap(kH5, Dir::Up, movable, nm, session.playerIsWhite());
+        char to[3];
+        squareName(next, to);
+        printf("    d7yAE: h5 up -> %s (008: %s)\n", to,
+               snapNoWrap(kH5, Dir::Up, movable, nm, session.playerIsWhite()) == kH5 ? "no move" : "moved");
+      }
       char sq[3];
       squareName(session.initialCursor(), sq);
-      printf("    snap cursor: start %s, %d presses (007: %d, list: %d). standard keys: %s\n", sq, snapPresses,
+      printf("    snap cursor: start %s, %d presses (008: %d, list: %d). standard keys: %s\n", sq, snapPresses,
              oldPresses, listPresses, keys);
       if (ply == 1) {
         // A cheap wrong (non-mating, not expected) move for the simulator run.
@@ -520,12 +618,14 @@ int runSet(const char* dir, const char* name) {
          stats.puzzles, stats.failed, stats.turns, stats.altMatePositions, stats.altMateMoves);
   const char* buckets[8] = {"0-4", "5-8", "9-12", "13-16", "17-20", "21-24", "25-28", "29+"};
   const double turns = stats.turns ? static_cast<double>(stats.turns) : 1.0;
-  printf("  presses per player move: now %.2f (max %d), 007 %.2f (max %d), 006 list %.2f (max %d); unreachable %d\n",
+  printf("  presses per player move: now %.2f (max %d), 008 %.2f (max %d), 006 list %.2f (max %d); unreachable %d\n",
          stats.snapSum / turns, stats.snapMax, stats.oldSum / turns, stats.oldMax, stats.listSum / turns,
          stats.listMax, stats.unreachable);
   printf("  destination cursor starts on the answer: %d of %d turns (%.1f%%)\n", stats.startHits, stats.turns,
          100.0 * stats.startHits / turns);
-  printf("    presses    now    007   list\n");
+  printf("  presses that stay put: now %ld, 008 %ld, of %ld (every target square x 4 directions)\n", stats.stuckNow,
+         stats.stuckOld, stats.pressesTried);
+  printf("    presses    now    008   list\n");
   for (int i = 0; i < 8; ++i) {
     printf("    %-7s %6d %6d %6d\n", buckets[i], stats.snapHist[i], stats.oldHist[i], stats.listHist[i]);
   }
