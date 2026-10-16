@@ -25,8 +25,9 @@ class ChessPuzzleActivity final : public Activity {
 
   Mode mode = Mode::Picker;
   Layout layout = Layout::Standard;
+  bool darkDither50 = false;  // dark squares at 50% instead of 25%
 
-  // Set picker. Rows: the sets, then "Buttons", then "Debug: perft".
+  // Set picker. Rows: the sets, then "Buttons", "Debug: dither", "Debug: perft".
   char setNames[kMaxSets][kSetNameBytes] = {};
   int setTotals[kMaxSets] = {};
   int setNext[kMaxSets] = {};
@@ -66,6 +67,12 @@ class ChessPuzzleActivity final : public Activity {
   uint64_t perftNodes = 0;
   uint32_t perftMs = 0;
 
+  // Diagnostics. render() fills these; loop() logs them.
+  uint32_t renderStackHW = 0;  // bytes (StackType_t is uint8_t on ESP32)
+  uint32_t refreshMs = 0;
+  volatile uint32_t renderSeq = 0;
+  uint32_t loggedRenderSeq = 0;
+
   Action readAction() const;
   void loadSettings();
   void saveSettings() const;
@@ -77,6 +84,8 @@ class ChessPuzzleActivity final : public Activity {
   void handlePuzzle(Action action);
   void handleDebug(Action action);
   void recordSolved();
+  void logDiag(const char* scene) const;
+  void logRefresh();
 
   void loadPosition(int index);
   void runPerft();

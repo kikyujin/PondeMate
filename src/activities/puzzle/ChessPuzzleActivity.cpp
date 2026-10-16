@@ -4,6 +4,8 @@
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -216,15 +218,22 @@ ChessPuzzleActivity::Action ChessPuzzleActivity::readAction() const {
 // ---------------------------------------------------------------------------
 // Storage
 
+// One "key=value" per line; a missing "dither=" line means 25%.
 void ChessPuzzleActivity::loadSettings() {
-  char buf[32];
+  char buf[48];
   layout = Layout::Standard;
-  if (readSmallFile(kSettingsPath, buf, sizeof(buf)) && strstr(buf, "hjkl") != nullptr) layout = Layout::Hjkl;
+  darkDither50 = false;
+  if (!readSmallFile(kSettingsPath, buf, sizeof(buf))) return;
+  if (strstr(buf, "hjkl") != nullptr) layout = Layout::Hjkl;
+  if (strstr(buf, "dither=50") != nullptr) darkDither50 = true;
 }
 
 void ChessPuzzleActivity::saveSettings() const {
   Storage.mkdir("/pondemate");
-  writeSmallFile(kSettingsPath, layout == Layout::Hjkl ? "buttons=hjkl\n" : "buttons=standard\n");
+  char text[48];
+  snprintf(text, sizeof(text), "buttons=%s\ndither=%d\n", layout == Layout::Hjkl ? "hjkl" : "standard",
+           darkDither50 ? 50 : 25);
+  writeSmallFile(kSettingsPath, text);
 }
 
 void ChessPuzzleActivity::scanSets() {
@@ -272,7 +281,7 @@ void ChessPuzzleActivity::scanSets() {
     if (next > setTotals[i]) next = setTotals[i];
     setNext[i] = next;
   }
-  if (pickerIndex > setCount + 1) pickerIndex = 0;
+  if (pickerIndex > setCount + 2) pickerIndex = 0;
 }
 
 bool ChessPuzzleActivity::openPuzzle(const int set, const int index) {
@@ -316,6 +325,29 @@ void ChessPuzzleActivity::recordSolved() {
   if (!log || !log.seek(log.fileSize()) || log.write(line, len) != static_cast<size_t>(len)) {
     LOG_ERR("PONDE", "Cannot append %s", kLogPath);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics (serial only)
+
+// Called from the loop task, so stackHW is the loop task's.
+void ChessPuzzleActivity::logDiag(const char* scene) const {
+  LOG_INF("PONDE", "diag %s stackHW=%u renderHW=%u heap=%u maxAlloc=%u minHeap=%u", scene,
+          static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)), static_cast<unsigned>(renderStackHW),
+          static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()),
+          static_cast<unsigned>(ESP.getMinFreeHeap()));
+}
+
+// Logs the refresh that render() timed since the last call.
+void ChessPuzzleActivity::logRefresh() {
+  if (renderSeq == loggedRenderSeq) return;
+  uint32_t ms;
+  {
+    RenderLock lock(*this);
+    loggedRenderSeq = renderSeq;
+    ms = refreshMs;
+  }
+  LOG_INF("PONDE", "refresh fast ms=%lu", static_cast<unsigned long>(ms));
 }
 
 // ---------------------------------------------------------------------------
@@ -435,22 +467,25 @@ void ChessPuzzleActivity::handlePuzzle(const Action action) {
     case pondemate::PlayResult::Wrong:
       startTurn();
       snprintf(statusText, sizeof(statusText), "Wrong - try again (mistakes: %d)", session.mistakes());
+      logDiag("wrong");
       break;
     case pondemate::PlayResult::Correct:
       startTurn();
       snprintf(statusText, sizeof(statusText), "Correct - keep going");
+      logDiag("correct");
       break;
     case pondemate::PlayResult::Solved:
       phase = Phase::Solved;
       cursorText[0] = '\0';
       snprintf(statusText, sizeof(statusText), "Solved! (mistakes: %d)  OK: next", session.mistakes());
       recordSolved();
+      logDiag("solved");
       break;
   }
 }
 
 void ChessPuzzleActivity::handlePicker(const Action action) {
-  const int rows = setCount + 2;
+  const int rows = setCount + 3;
   if (action == Action::Up && pickerIndex > 0) pickerIndex--;
   if (action == Action::Down && pickerIndex + 1 < rows) pickerIndex++;
   if (action != Action::Ok) return;
@@ -469,6 +504,9 @@ void ChessPuzzleActivity::handlePicker(const Action action) {
     }
   } else if (pickerIndex == setCount) {
     layout = layout == Layout::Standard ? Layout::Hjkl : Layout::Standard;
+    saveSettings();
+  } else if (pickerIndex == setCount + 1) {
+    darkDither50 = !darkDither50;
     saveSettings();
   } else {
     mode = Mode::Debug;
@@ -528,6 +566,11 @@ void ChessPuzzleActivity::runPerft() {
   perftDone = true;
   LOG_INF("CHESS", "perft(%d) %s = %llu in %lu ms", depth, kPositions[positionIndex].name,
           static_cast<unsigned long long>(nodes), static_cast<unsigned long>(perftMs));
+  LOG_INF("PONDE", "perft %s d%d nodes=%llu ms=%lu stackHW=%u heap=%u maxAlloc=%u minHeap=%u",
+          kPositions[positionIndex].name, depth, static_cast<unsigned long long>(nodes),
+          static_cast<unsigned long>(perftMs), static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
+          static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()),
+          static_cast<unsigned>(ESP.getMinFreeHeap()));
 }
 
 // ---------------------------------------------------------------------------
@@ -538,9 +581,11 @@ void ChessPuzzleActivity::onEnter() {
   loadSettings();
   scanSets();
   requestUpdateAndWait();
+  logDiag("picker");
 }
 
 void ChessPuzzleActivity::loop() {
+  logRefresh();
   const Action action = readAction();
   if (action == Action::None) return;
 
@@ -550,6 +595,7 @@ void ChessPuzzleActivity::loop() {
   }
   {
     RenderLock lock(*this);
+    const Mode before = mode;
     switch (mode) {
       case Mode::Picker:
         handlePicker(action);
@@ -560,6 +606,11 @@ void ChessPuzzleActivity::loop() {
       case Mode::Debug:
         handleDebug(action);
         break;
+    }
+    if (mode != before) {
+      if (before == Mode::Puzzle) logDiag("exit");
+      if (mode == Mode::Puzzle) logDiag("enter");
+      if (mode == Mode::Picker) logDiag("picker");
     }
   }
   requestUpdate();
@@ -577,6 +628,7 @@ void ChessPuzzleActivity::drawBoard(const chess::Position& board, const bool whi
   int fallbacks = 0;
   const bool holding = marks && (phase == Phase::SelectDest || phase == Phase::SelectPromo);
   bool groundDrawn = true;
+  const Color darkColor = darkDither50 ? Color::DarkGray : Color::LightGray;
 
   for (int row = 0; row < 8; row++) {
     for (int col = 0; col < 8; col++) {
@@ -586,17 +638,22 @@ void ChessPuzzleActivity::drawBoard(const chess::Position& board, const bool whi
       // a1 is dark either way up: (row + col) is odd exactly when rank + file is even.
       const bool dark = ((row + col) & 1) != 0;
       const bool grabbedHere = holding && sq == grabbed;
-      if (dark || grabbedHere) {
-        renderer.fillRectDither(x, y, square, square, Color::LightGray);
-      }
-      // Grabbed square: the 25% dither inverted gives a 75% ground (only x, y both even stay white);
-      // the piece is then drawn normally on top so its colour still reads right.
+      // Grabbed square: the 25% dither inverted gives a 75% ground (only x, y both even stay white)
+      // whichever dither the dark squares use; the piece is then drawn normally on top so its colour
+      // still reads right.
       if (grabbedHere) {
+        renderer.fillRectDither(x, y, square, square, Color::LightGray);
         groundDrawn = invertSquare(renderer, x, y, square);
         if (!groundDrawn) {
           LOG_ERR("CHESS", "cannot darken the grabbed square");
-          if (!dark) renderer.fillRect(x, y, square, square, false);
+          if (dark) {
+            renderer.fillRectDither(x, y, square, square, darkColor);
+          } else {
+            renderer.fillRect(x, y, square, square, false);
+          }
         }
+      } else if (dark) {
+        renderer.fillRectDither(x, y, square, square, darkColor);
       }
 
       const uint8_t piece = board.squares[sq];
@@ -673,7 +730,7 @@ void ChessPuzzleActivity::renderPicker() const {
     renderer.drawText(UI_10_FONT_ID, left, y, "No puzzle sets in /pondemate/sets");
     y += rowHeight;
   }
-  const int rows = setCount + 2;
+  const int rows = setCount + 3;
   for (int i = 0; i < rows; i++) {
     if (i < setCount) {
       if (setNext[i] >= setTotals[i]) {
@@ -683,6 +740,8 @@ void ChessPuzzleActivity::renderPicker() const {
       }
     } else if (i == setCount) {
       snprintf(line, sizeof(line), "Buttons: %s", layout == Layout::Hjkl ? "hjkl" : "standard");
+    } else if (i == setCount + 1) {
+      snprintf(line, sizeof(line), "Debug: dither %d%%", darkDither50 ? 50 : 25);
     } else {
       snprintf(line, sizeof(line), "Debug: perft");
     }
@@ -694,7 +753,7 @@ void ChessPuzzleActivity::renderPicker() const {
 
   const int hintsY = renderer.getScreenHeight() - metrics.buttonHintsHeight - lineHeight - metrics.verticalSpacing;
   const bool onSet = pickerIndex < setCount;
-  const char* ok = onSet ? "Start" : (pickerIndex == setCount ? "Toggle" : "Open");
+  const char* ok = onSet ? "Start" : (pickerIndex <= setCount + 1 ? "Toggle" : "Open");
   drawHints("Home", ok, "Up", "Down", "", "", hintsY);
 }
 
@@ -811,5 +870,9 @@ void ChessPuzzleActivity::render(RenderLock&&) {
       renderDebug();
       break;
   }
+  const unsigned long refreshStart = millis();
   renderer.displayBuffer();
+  refreshMs = static_cast<uint32_t>(millis() - refreshStart);
+  renderStackHW = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
+  renderSeq = renderSeq + 1;
 }
