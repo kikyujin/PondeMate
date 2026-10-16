@@ -83,6 +83,7 @@ struct SetStats {
   long pressesTried = 0;
   long stuckNow = 0;
   long stuckOld = 0;
+  int hintsChecked = 0;
   // Turns where the current rule needs more / fewer presses than the 10/14 008 rule.
   int moreThanOld = 0;
   int fewerThanOld = 0;
@@ -546,6 +547,30 @@ void runPuzzle(const char* set, const char* line, SetStats& stats, const bool sh
       if (copy.mistakes() != session.mistakes() + 1) fail(set, id, "mistakes not incremented");
     }
 
+    // B (009): expectedMove() for hints is the file's move, legal, from a movable piece.
+    {
+      chess::Move hint;
+      if (!session.expectedMove(hint)) {
+        fail(set, id, "expectedMove missing on a player turn");
+      } else {
+        char uci[6];
+        chess::moveToString(hint, uci);
+        if (strcmp(uci, expected) != 0) fail(set, id, "expectedMove is not the file's move");
+        bool isLegal = false;
+        for (int i = 0; i < legal.count; ++i) {
+          isLegal = isLegal || (legal.moves[i].from == hint.from && legal.moves[i].to == hint.to &&
+                                legal.moves[i].promotion == hint.promotion);
+        }
+        if (!isLegal) fail(set, id, "expectedMove is not legal");
+        uint8_t movable[64];
+        const int nm = session.movablePieces(movable);
+        bool fromMovable = false;
+        for (int i = 0; i < nm; ++i) fromMovable = fromMovable || movable[i] == hint.from;
+        if (!fromMovable) fail(set, id, "expectedMove does not start on a movable piece");
+        stats.hintsChecked++;
+      }
+    }
+
     // 6. hideMarks on the expected move.
     checkMarks(session, cands[expectedIndex], set, id);
 
@@ -665,6 +690,8 @@ void runPuzzle(const char* set, const char* line, SetStats& stats, const bool sh
     if (session.nextPly() != ply + 2) fail(set, id, "ply did not advance by 2");
   }
   if (!session.solved()) fail(set, id, "not solved at the end");
+  chess::Move none;
+  if (session.expectedMove(none)) fail(set, id, "expectedMove after solved");
   if (failures != failuresBefore) stats.failed++;
 }
 
@@ -692,6 +719,7 @@ int runSet(const char* dir, const char* name) {
   printf("  presses per player move: now %.2f (max %d), 10/14 008 %.2f (max %d), 006 list %.2f (max %d); unreachable %d\n",
          stats.snapSum / turns, stats.snapMax, stats.oldSum / turns, stats.oldMax, stats.listSum / turns,
          stats.listMax, stats.unreachable);
+  printf("  expectedMove checked on %d of %d player turns\n", stats.hintsChecked, stats.turns);
   printf("  destination cursor starts on the answer: %d of %d turns (%.1f%%)\n", stats.startHits, stats.turns,
          100.0 * stats.startHits / turns);
   printf("  presses that stay put: now %ld, 10/14 008 %ld, of %ld (every target square x 4 directions)\n", stats.stuckNow,

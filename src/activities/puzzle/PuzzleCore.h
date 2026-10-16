@@ -93,6 +93,9 @@ class PuzzleSession {
   // after begin(), then each reply.
   uint8_t lastFrom() const { return lastMoveFrom; }
   uint8_t lastTo() const { return lastMoveTo; }
+  // The solution's move for the player's turn (the puzzle file's line, even where another move
+  // would also mate), as a legal move of the current position. False once solved.
+  bool expectedMove(chess::Move& out) const;
   // Index into the record's moves of the move the player should play next.
   int nextPly() const { return ply; }
   int mistakes() const { return wrongCount; }

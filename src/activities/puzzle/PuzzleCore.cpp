@@ -240,6 +240,11 @@ void PuzzleSession::displayText(const chess::Move& move, char* buf, const size_t
   buf[w] = '\0';
 }
 
+bool PuzzleSession::expectedMove(chess::Move& out) const {
+  if (isSolved || ply >= rec.moveCount) return false;
+  return findLegal(pos, rec.moves[ply], out);
+}
+
 PlayResult PuzzleSession::play(const chess::Move& move) {
   if (isSolved) return PlayResult::Solved;
 
