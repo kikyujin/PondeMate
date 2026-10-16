@@ -466,17 +466,26 @@ void ChessPuzzleActivity::handlePuzzle(const Action action) {
 
   // A move was chosen in SelectDest or SelectPromo.
   const chess::Move move = promoChoices[promoIndex];
+  playerMoveBoard = session.position();
   switch (session.play(move)) {
     case pondemate::PlayResult::Wrong:
       startTurn();
       snprintf(statusText, sizeof(statusText), "Wrong - try again (mistakes: %d)", session.mistakes());
       logDiag("wrong");
       break;
-    case pondemate::PlayResult::Correct:
+    case pondemate::PlayResult::Correct: {
+      chess::Undo undo;
+      chess::makeMove(playerMoveBoard, move, undo);
+      playerMoveFrom = move.from;
+      playerMoveTo = move.to;
+      showingPlayerMove = true;
+      replyTimerStarted = false;
+      playerMoveSeq = renderSeq;
       startTurn();
       snprintf(statusText, sizeof(statusText), "Correct - keep going");
       logDiag("correct");
       break;
+    }
     case pondemate::PlayResult::Solved:
       phase = Phase::Solved;
       cursorText[0] = '\0';
@@ -590,6 +599,22 @@ void ChessPuzzleActivity::onEnter() {
 
 void ChessPuzzleActivity::loop() {
   logRefresh();
+  if (showingPlayerMove) {
+    // The delay starts once the player's board is on the panel.
+    if (!replyTimerStarted) {
+      if (renderSeq == playerMoveSeq) return;
+      replyTimerStarted = true;
+      replyTimerStart = millis();
+      return;
+    }
+    if (millis() - replyTimerStart < kReplyDelayMs) return;
+    {
+      RenderLock lock(*this);
+      showingPlayerMove = false;
+    }
+    requestUpdate();
+    return;
+  }
   const Action action = readAction();
   if (action == Action::None) return;
 
@@ -681,15 +706,16 @@ void ChessPuzzleActivity::drawBoard(const chess::Position& board, const bool whi
   // Marks go last so their white edge line also shows on the border squares.
   if (marks) {
     int x, y;
-    squareOrigin(session.lastFrom(), whiteAtBottom, square, x, y);
+    squareOrigin(showingPlayerMove ? playerMoveFrom : session.lastFrom(), whiteAtBottom, square, x, y);
     drawCorners(renderer, x, y, square);
-    squareOrigin(session.lastTo(), whiteAtBottom, square, x, y);
+    squareOrigin(showingPlayerMove ? playerMoveTo : session.lastTo(), whiteAtBottom, square, x, y);
     drawCorners(renderer, x, y, square);
     if (!groundDrawn) {
       squareOrigin(grabbed, whiteAtBottom, square, x, y);
       renderer.drawRect(x, y, square, square, kMarkWidth, true);
     }
-    if (phase == Phase::SelectPiece || phase == Phase::SelectDest || phase == Phase::SelectPromo) {
+    const bool choosing = phase == Phase::SelectPiece || phase == Phase::SelectDest || phase == Phase::SelectPromo;
+    if (choosing && !showingPlayerMove) {
       squareOrigin(cursor, whiteAtBottom, square, x, y);
       renderer.drawRect(x, y, square, square, kMarkWidth, true);
     }
@@ -768,7 +794,7 @@ void ChessPuzzleActivity::renderPuzzle() const {
   const bool whiteAtBottom = hasPuzzle ? session.playerIsWhite() : true;
 
   // The last move stays marked after Solved / Set complete; the cursor only shows while choosing.
-  if (hasPuzzle) drawBoard(session.position(), whiteAtBottom, true);
+  if (hasPuzzle) drawBoard(showingPlayerMove ? playerMoveBoard : session.position(), whiteAtBottom, true);
 
   const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
   const int smallLineHeight = renderer.getLineHeight(UI_10_FONT_ID);
@@ -787,11 +813,17 @@ void ChessPuzzleActivity::renderPuzzle() const {
     renderer.drawCenteredText(UI_12_FONT_ID, y, whiteAtBottom ? "White to move" : "Black to move");
   }
   y += lineHeight;
-  if (cursorText[0] != '\0') renderer.drawCenteredText(UI_12_FONT_ID, y, cursorText, true, EpdFontFamily::BOLD);
+  if (cursorText[0] != '\0' && !showingPlayerMove) {
+    renderer.drawCenteredText(UI_12_FONT_ID, y, cursorText, true, EpdFontFamily::BOLD);
+  }
   y += lineHeight;
   if (statusText[0] != '\0') renderer.drawCenteredText(UI_12_FONT_ID, y, statusText);
   y += lineHeight + smallLineHeight / 2;
 
+  if (showingPlayerMove) {
+    drawHints("", "", "", "", "", "", y);
+    return;
+  }
   switch (phase) {
     case Phase::SelectPiece:
       drawHints("Sets", "Grab", "Up", "Down", "Left", "Right", y);

@@ -50,6 +50,16 @@ class ChessPuzzleActivity final : public Activity {
   chess::Move promoChoices[4] = {};
   int promoCount = 0;
   int promoIndex = 0;
+  // After a correct move, the board with only the player's move is shown for a while before the
+  // opponent's reply (already played in the session) appears. Input is ignored meanwhile.
+  static constexpr unsigned long kReplyDelayMs = 1000;  // counted from the end of that refresh
+  chess::Position playerMoveBoard;
+  uint8_t playerMoveFrom = 0;
+  uint8_t playerMoveTo = 0;
+  bool showingPlayerMove = false;
+  bool replyTimerStarted = false;
+  uint32_t playerMoveSeq = 0;  // renderSeq when the player's board was requested
+  unsigned long replyTimerStart = 0;
   // Text prepared in loop() so render() only draws.
   char cursorText[kLineBytes] = {};
   char statusText[kLineBytes] = {};
