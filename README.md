@@ -135,7 +135,7 @@ Host tests (no device needed):
 
 ```sh
 test/host/chess/run.sh
-test/host/pondemate/run.sh sdcard/pondemate/sets
+test/host/pondemate/run.sh "$PWD/sdcard/pondemate/sets"   # the script changes directory; pass an absolute path
 ```
 
 ## Making puzzle sets
