@@ -1,297 +1,187 @@
-# CrossPoint Reader
+# PondeMate
 
-[![Fund contributors](https://img.shields.io/badge/%F0%9F%91%91_Fund_contributors-royalty.dev-BB953A?style=for-the-badge&labelColor=1a1a1a)](https://app.royalty.dev/crosspoint-reader/crosspoint-reader)
+Chess puzzle firmware for the **XTEINK X3** e-ink reader — a fork of
+[CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader) 1.6.5.
 
-CrossPoint is open-source e-reader firmware - community-built, fully hackable, free forever. It's maintained by a growing community of developers and readers who believe your device should do what you want - not what a manufacturer decided for you.
+PondeMate adds a puzzle player to CrossPoint: pick a set of lichess puzzles from
+the SD card, move pieces with a cursor that snaps to legal choices, and keep
+going until the set is done. Everything else in CrossPoint (the reader, Wi-Fi
+transfer, settings) is still there. CrossPoint's own README is kept at
+[docs/CROSSPOINT_README.md](docs/CROSSPOINT_README.md).
 
-### Now running on:
-- **ESP32C3-based** Xteink X4 and X3.
-- **ESP32S3-based** Xteink X4Pro and X4Classic, Seeed reTerminal Sticky, M5PaperMono
+> **Unofficial and unsupported.** PondeMate is a personal hobby project. It is
+> not affiliated with, endorsed by or supported by XTEINK or the CrossPoint
+> Reader project. It comes with no warranty, as stated in the MIT License.
+> Issues and pull requests may not get a response. Flashing custom firmware is
+> at your own risk.
 
-Check [our Devices page](https://crosspointreader.com/devices) for the full list.
+| Set picker | Choosing a destination | In-puzzle menu | Hint |
+|---|---|---|---|
+| ![Set picker](docs/pondemate/images/set-picker.png) | ![Choosing a destination](docs/pondemate/images/choose-destination.png) | ![In-puzzle menu](docs/pondemate/images/puzzle-menu.png) | ![Hint](docs/pondemate/images/hint.png) |
 
-![CrossPoint Reader running on Xteink device](./docs/images/cover.jpg)
+Screenshots are from the CrossPoint simulator (2× scale), not photos of the device.
 
-> If you're planning to buy an Xteink device, consider purchasing an **X3/X4 Developer Edition** through https://crosspointreader.com. CrossPoint receives a small share of each sale, helping fund development costs.
+## Features
 
-## What can CrossPoint do?
+- **Puzzle sets on the SD card** — `/pondemate/sets/*.txt`, one puzzle per
+  256-byte line. Four sets of 1,000 lichess puzzles (rating 1000–1500) are
+  included: mate in 1–2, hanging piece, fork/pin, endgame.
+- **Snap cursor** — Left/Right pick a file that has a movable piece (or a legal
+  destination), Up/Down pick a square within that file. Both wrap around.
+  The same two moves work for choosing the piece and its destination.
+- **See what happened** — after a correct move your move stays on the board for
+  a second before the opponent's reply appears. The last move is marked with
+  corner brackets.
+- **Hint and Skip** — press Back while choosing a piece to open a small menu:
+  Resume / Hint (shows which piece to move, not where) / Skip / Sets.
+- **Progress and log** — each set remembers the next puzzle; every solved or
+  skipped puzzle is appended to `/pondemate/log.txt` with mistakes and hints.
+- **Two button layouts** — standard, or hjkl (front buttons as h/j/k/l).
+- **Board shading** — dark squares at 25% (default) or 50% dither.
+- Screen changes use a half refresh so the previous screen does not linger.
 
-- **Reader engine**: EPUB 2/3 rendering with embedded-style option, image handling, hyphenation, kerning, adaptive table layouts, native CJK ruby annotations, chapter navigation, footnotes, bookmarks, dictionary lookups ([StarDict](docs/dictionary.md)), go-to-percent, auto page turn, orientation control, focus reading, KOReader progress sync and more.
+## Controls
 
-- **Various formats**: native handling for `.epub`, `.xtc/.xtch`, `.txt`, and `.bmp`.
+The X3 has four buttons on the front (1–4, left to right) and two on the sides:
+Up on the left side of the device and Down on the right side.
 
-- **Touch reading**: follow EPUB links and look up words in the dictionary on touch-enabled devices.
+| Button | Standard | hjkl |
+|---|---|---|
+| Front 1 | Back / menu | Left (h) |
+| Front 2 | OK (grab, move, select) | Down (j) |
+| Front 3 | Up | Up (k) |
+| Front 4 | Down | Right (l) |
+| Side, left (Up) | Left | OK |
+| Side, right (Down) | Right | Back / menu |
 
-- **Screenshots.**
+In the set picker, Up/Down choose a row and OK opens it. The picker also holds
+the settings: `Buttons` (standard / hjkl), `Debug: dither 25% / 50%`,
+`Debug: reset progress` (asks for confirmation; clears every set's progress,
+keeps `log.txt`) and `Debug: perft` (move-generator self test).
 
-- **Custom fonts**: install your favorite fonts on the SD card.
+## SD card layout
 
-- **Tilt page turn (X3 and Sticky)**.
-
-- **USB Drive mode (X4Pro)**: access the SD card as USB mass storage.
-
-- **Library workflow**: indexed title/author search, recently-added and alphabetical views, multilingual grouping, folder browser, recent books, and SD-cache management.
-
-- **Wireless workflows**:
-  
-  - File transfer web UI
-  - EPUB Optimizer
-  - Web settings UI/API (edit many device settings from browser)
-  - WebSocket fast uploads
-  - WebDAV handler
-  - AP mode (hotspot) and STA mode (join existing Wi-Fi), both with QR helpers
-  - Calibre wireless connect flow
-  - OPDS browser with saved servers (up to 8), search, pagination, and direct download
-  - OTA update checks and installs from GitHub releases
-
-- **Customization**: night mode, multiple themes (Classic, Lyra, Lyra Extended, RoundedRaff), sleep screen modes including transparent overlays, front/side button remapping, status bar controls, power-button behavior, refresh cadence, and more.
-
-- **Localization**: 34 UI languages and counting, including CJK font fallback and RTL support.
-
-### Coming soon:
-
-- More themes.
-
-- Web plugins.
-
-- Bluetooth pageturner.
-
-- Much more! stay tuned.
-
----
-
-## USB-locked devices (Xteink Unlocker)
-
-Some Xteink units purchased from third-party stores (e.g. AliExpress) ship with USB flashing locked from the factory.
-If your device is locked, you will need to use the **Xteink Unlocker** tool available at
-https://crosspointreader.com/#unlock-tool before you can flash CrossPoint.
-
-**You do not need this tool if you bought your device directly from xteink.com.** Those units are not locked.
-
-**Not sure if your device is locked?** Power it on, connect the USB-C cable, and try flashing via the web flasher first (see
-[Install firmware](#install-firmware) below). If the browser's serial device picker does not show your device, try a different
-USB port or browser before assuming the device is locked. Only reach for the unlocker if the device still doesn't appear.
-
-> ### ⚠️ WARNING: READ THIS BEFORE USING THE UNLOCKER ⚠️
-> 
-> **The only officially supported firmwares in the unlock tool are CrossPoint and CrossInk.**
-> 
-> Flashing any other firmware on a USB-locked device may **permanently brick the device** or leave it **permanently
-> stuck on that firmware with no recovery path**. Once USB flashing is re-locked, your only way back is via OTA, and if
-> the firmware you flashed doesn't support OTA, **there is no way out**.
-
-## Install firmware
-
-### Web installer (recommended)
-
-1. Connect your device to your computer via USB-C and wake/unlock the device
-2. Go to https://crosspointreader.com/#flash-tools, select your device (X3, X4, Xteink X4Pro, Seeed reTerminal Sticky, or M5PaperMono), and choose an official CrossPoint release.
-
-### Web installer (specific version)
-
-1. Connect your device to your computer via USB-C and wake/unlock the device
-2. Download the firmware file for your device from [Releases](https://github.com/crosspoint-reader/crosspoint-reader/releases), or compile yourself.
-3. Go to https://crosspointreader.com/#flash-tools, select your device, click "Custom .bin" and upload the firmware file.
-
-### Revert to Official Firmware
-
-To revert to the official firmware, you can also flash the latest official firmware using https://crosspointreader.com/#flash-tools.
-
-### Command line
-
-1. Install [`esptool`](https://github.com/espressif/esptool):
-
-```bash
-pip install esptool
+```
+/pondemate/
+  sets/          puzzle sets, *.txt (from sdcard/pondemate/sets/ in this repo)
+  progress/      <set name>.txt — index of the next puzzle (written by the device)
+  log.txt        one line per solved or skipped puzzle (append only)
+  settings.txt   buttons=standard|hjkl, dither=25|50
 ```
 
-2. Download the firmware file for your device from the [releases page](https://github.com/crosspoint-reader/crosspoint-reader/releases).
-3. Connect your device via USB-C.
-4. Find the device port. On Linux, run `dmesg` after connecting. On macOS:
+`log.txt` columns, tab separated:
 
-```bash
-log stream --predicate 'subsystem == "com.apple.iokit"' --info
+```
+set  index  puzzle_id  rating  mistakes  hints  result
 ```
 
-5. Flash an X3 or X4:
+`result` is `solved` or `skip`; `index` is 0-based. (Logs written by very early
+builds have only the first five columns.)
 
-```bash
-esptool.py --chip esp32c3 --port /dev/ttyACM0 --baud 921600 write_flash 0x10000 /path/to/firmware.bin
-```
+## Install
 
-   Flash an Xteink X4Pro, Seeed reTerminal Sticky, or M5PaperMono:
+1. **Back up the original firmware first** (the whole 16 MB flash, once):
+   ```sh
+   esptool.py --chip esp32c3 --port <port> read_flash 0x0 0x1000000 x3_backup.bin
+   ```
+2. Download `pondemate-v0.1.0-x3.bin` and `pondemate-v0.1.0-sdcard.zip` from
+   [Releases](https://github.com/kikyujin/PondeMate/releases).
+3. Flash the firmware with one of:
+   - the CrossPoint web flasher: https://crosspointreader.com/#flash-tools → X3 →
+     "Custom .bin";
+   - esptool:
+     ```sh
+     esptool.py --chip esp32c3 --port <port> --baud 921600 write_flash 0x10000 pondemate-v0.1.0-x3.bin
+     ```
+4. Unzip `pondemate-v0.1.0-sdcard.zip` to the root of the SD card, so that the
+   card has `/pondemate/sets/*.txt`.
 
-```bash
-esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 921600 write_flash 0x10000 /path/to/firmware.bin
-```
+**USB-locked devices:** some X3 units sold by third-party stores ship with USB
+flashing locked. CrossPoint's README describes an unlocker tool; PondeMate has
+not been tested with it.
 
-### Manual
+**Updates:** Settings → "Check for Updates" is removed in PondeMate (it would
+fetch upstream CrossPoint and replace this firmware). Download new versions from
+Releases and flash them yourself. The firmware version shown in Settings and
+About is still CrossPoint's (1.6.5).
 
-See [Development quick start](#development-quick-start) below.
-
----
-
-## Custom SD-card fonts
-
-On devices with external RAM enabled in CrossPoint, copy `.ttf`, `.otf`, or `.ttc` files to the SD card and select them as reader fonts. Put one file in `/fonts/` or `/.fonts/`, or put one family's files in a subfolder. See the [SD card font guide](./docs/sd-card-fonts.md) for the folder layout and styles.
-
-On other devices, convert the font to `.cpfont` first. `.cpfont` files also work on devices with external RAM enabled and have better performance. No firmware reflash is needed to add fonts.
-
-To make `.cpfont` files:
-
-1. Go to https://crosspointreader.com/fonts and open the "SD-card font builder" form.
-2. Upload up to four styles (regular, bold, italic, bold-italic), set the family name, point sizes, and Unicode range.
-3. Download the generated `.cpfont` files.
-4. Copy them to your SD card under `/fonts/YourFont/` (or `/.fonts/YourFont/` to hide the folder).
-5. Select the font on the device from the font settings.
-
-Conversion runs the firmware repo's `lib/EpdFont/scripts/fontconvert_sdcard.py` script unmodified, so output matches a local host build.
-
----
-
-## Documentation
-
-- [User Guide](./USER_GUIDE.md)
-- [Web server usage](./docs/webserver.md)
-- [Web server endpoints](./docs/webserver-endpoints.md)
-- [Project scope](./SCOPE.md)
-- [Contributing docs](./docs/contributing/README.md)
-- [Touch and UI development](./docs/contributing/touch-and-ui.md) - how to build new screens on the FreeInkUI activity bases (UiListActivity and friends), plus build envs for the non-Xteink touch devices
-
----
-
-## Development quick start
-
-### Prerequisites
-
-- [pioarduino PlatformIO Core](https://github.com/pioarduino/platformio-core) or [VS Code + pioarduino IDE](https://github.com/pioarduino/pioarduino-vscode-ide)
-- Python 3.8+
-- `clang-format` 21
-- USB-C cable supporting data transfer
-
-### Setup
-
-```bash
-git clone --recursive https://github.com/crosspoint-reader/crosspoint-reader
-cd crosspoint-reader
-
-# if cloned without --recursive:
-git submodule update --init --recursive
-```
-
-### Nix/NixOS
-
-Nix/NixOS users can enter the development shell with either `nix develop` (flakes) or `nix-shell`:
-
-```bash
-nix develop -f nix
-# or
-nix-shell nix
-```
-
-To flash a connected ESP32-C3 device, enable PlatformIO's udev rules in your NixOS configuration:
-
-```nix
-services.udev.packages = with pkgs; [ platformio-core.udev ];
-```
-
-After rebuilding the system configuration, reconnect the device or reload udev rules.
-
-### Build / flash / monitor
-
-```bash
-pio run --target upload
-```
-
-### Contributor pre-PR checks
-
-```bash
-./bin/clang-format-fix
-pio check -e default
-pio run -e default
-```
-
-### Debugging
-
-After flashing the new features, it’s recommended to capture detailed logs from the serial port.
-
-First, make sure all required Python packages are installed:
-
-```python
-python3 -m pip install pyserial colorama matplotlib
-```
-
-After that run the script:
+**Going back:** write your backup over the whole flash:
 
 ```sh
-# For Linux
-# This was tested on Debian and should work on most Linux systems.
-python3 scripts/debugging_monitor.py
-
-# For macOS
-python3 scripts/debugging_monitor.py /dev/cu.usbmodem2101
+esptool.py --chip esp32c3 --port <port> write_flash 0x0 x3_backup.bin
 ```
 
-Minor adjustments may be required for Windows.
+or flash an official CrossPoint release with the web flasher.
 
----
+## Building
 
-## Internals
+PondeMate builds with PlatformIO like CrossPoint. Pinned versions:
 
-CrossPoint Reader is pretty aggressive about caching data down to the SD card to minimise RAM usage. The ESP32-C3 only has ~380KB of usable RAM, so we have to be careful. A lot of the decisions made in the design of the firmware were based on this constraint.
+| Component | Version |
+|---|---|
+| CrossPoint Reader base | tag `1.6.5` (`93e98bb7`) |
+| ChessCore (from CrossPlay) | `0a1d17f` (CrossPlay v1.14.2) |
+| pioarduino core | 6.1.19 (6.2.0 fails: SCons 4.11.1 lacks `SCons.Tool.FortranCommon`) |
+| platform-espressif32 | 55.03.311 (as in `platformio.ini`) |
 
-### Data caching
-
-The first time chapters of a book are loaded, they are cached to the SD card. Subsequent loads are served from the
-cache. This cache directory exists at `.crosspoint` on the SD card. The structure is as follows:
-
-```text
-.crosspoint/
-├── epub_<hash>/         # one directory per book, named by content hash
-│   ├── progress.bin     # reading position (chapter, page, etc.)
-│   ├── cover.bmp        # generated cover image
-│   ├── book.bin         # metadata: title, author, spine, TOC
-│   ├── css_rules.cache  # parsed CSS rule cache
-│   ├── img_*            # rendered image cache files
-│   └── sections/        # per-chapter layout cache
-│       ├── 0.bin
-│       ├── 1.bin
-│       └── ...
-├── settings.json        # device settings
-├── state.json           # resume/runtime state
-└── recent.json          # recent books list
+```sh
+git clone --recursive https://github.com/kikyujin/PondeMate.git
+cd PondeMate
+pio run -e gh_release            # release build (the Release firmware.bin)
+pio run -e default -t upload     # development build with debug logging, flash over USB
 ```
 
-Removing `/.crosspoint` clears all cached metadata and forces a full regeneration on next open. Book deletes, overwrites, and moves done through the firmware or web UI clear or re-key matching caches; manual SD-card edits may leave stale cache directories behind.
+Host tests (no device needed):
 
-For more details on the internal file structures, see the [file formats document](./docs/file-formats.md).
+```sh
+test/host/chess/run.sh
+test/host/pondemate/run.sh sdcard/pondemate/sets
+```
+
+## Making puzzle sets
+
+`tools/pondemate/` picks puzzles from the
+[lichess puzzle database](https://database.lichess.org/#puzzles)
+(`pick.py`), reports statistics (`stats.py`) and checks every picked puzzle
+with the same ChessCore the device runs (`validate.sh`). See
+[tools/pondemate/README.md](tools/pondemate/README.md).
+
+The piece bitmaps are generated by `tools/pondemate/pieces/` (drawn for this
+project).
+
+## Credits and licenses
+
+- **CrossPoint Reader** — MIT, © 2025 CrossPoint Reader organization. PondeMate
+  keeps CrossPoint's history and license; see [`LICENSE`](LICENSE).
+- **ChessCore / ChessEngine** (`lib/ChessCore/`) — from
+  [CrossPlay](https://github.com/ma-r-s/crossplay) (commit `0a1d17f`) by Mario
+  Ruiz, MIT. See [`lib/ChessCore/LICENSE`](lib/ChessCore/LICENSE).
+- **FreeInk SDK** (`freeink-sdk/`, submodule) — MIT, with its own third-party
+  notices (`freeink-sdk/NOTICE`).
+- **Fonts** — Noto Sans / Noto Serif / OpenDyslexic (SIL OFL 1.1) and Ubuntu
+  (Ubuntu Font Licence 1.0), see `lib/EpdFont/builtinFonts/source/`.
+- **Puzzles** — the [lichess.org puzzle database](https://database.lichess.org/#puzzles),
+  released under CC0. Thank you, lichess!
+- **Piece artwork** — drawn for PondeMate, MIT.
+
+Everything bundled in the firmware and the repository is listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+PondeMate's own changes are released under the MIT License, like CrossPoint.
+
+Built with the help of Claude Code (Anthropic).
 
 ---
 
-## Contributing
+## 日本語
 
-Contributions are welcome. If you're new to the codebase, start with the [contributing docs](./docs/contributing/README.md). For things to work on, check the [ideas discussion board](https://github.com/crosspoint-reader/crosspoint-reader/discussions/categories/ideas) — leave a comment before starting so we don't duplicate effort.
+PondeMate は、XTEINK X3 をチェスパズル専用機にするファームウェアです。
+CrossPoint Reader 1.6.5 のフォークで、読書機能はそのまま残っています。
+lichess の問題（CC0）を4セット×1000問同梱。左右でファイル、上下でマスを選ぶ
+カーソル、ヒント・パス、進み具合とログに対応しています。
 
-Everyone here is a volunteer, so please be respectful and patient. For governance and community expectations, see [GOVERNANCE.md](./GOVERNANCE.md).
+設定の「Check for Updates」（更新の確認）は外してあります。新しい版は Releases から
+落として、自分で書き込んでください。設定に出る版の表示は CrossPoint 1.6.5 のままです。
 
----
-
-## Community forks
-
-One of the best things about open source is that anyone can take the code in a different direction. If you need something outside CrossPoint's [scope](./SCOPE.md), check out the community forks:
-
-- [CrossInk](https://github.com/uxjulia/CrossInk) — UX focused with minimal reading stats and broader customizations for the reading experience.
-
-- [papyrix-reader](https://github.com/bigbag/papyrix-reader) — Adds FB2 and MD format support. Actively maintained with Arabic script support. Custom themes.
-
-- [inx](https://github.com/obijuankenobiii/inx) — Completely reimagines the user interface with tabbed navigation.
-
-- [Witch(hunt) Reader](https://github.com/jpirnay/witchhunt-reader) — More faithful CSS styling and background work for slightly snappier interaction. Weather information panel. Markdown support.
-
-**Note:** Many of these features will make their way into CrossPoint over time. Each project chooses its own priorities and tradeoffs.
-
-Want to build your own device? Be sure to check out the [de-link](https://github.com/iandchasse/de-link) project or [OnePage Reader](https://github.com/MoveCall/onepage-reader).
-
----
-
-CrossPoint Reader is **not affiliated with Xteink or any device manufacturer**.
+個人の趣味の非公式なプロジェクトで、XTEINK・CrossPoint Reader とは関係ありません。
+MIT ライセンスのとおり無保証です。Issue や Pull Request には応えられないことがあります。
+書き込みは自己責任で、必ず純正ファームのバックアップを取ってから行ってください。

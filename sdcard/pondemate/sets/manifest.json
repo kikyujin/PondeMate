@@ -1,0 +1,129 @@
+{
+  "sets": {
+    "mate_r1000-1500.txt": {
+      "file": "mate_r1000-1500.txt",
+      "count": 1000,
+      "args": {
+        "themes": [
+          "mateIn1",
+          "mateIn2"
+        ],
+        "rating_min": 1000,
+        "rating_max": 1500,
+        "min_popularity": 80,
+        "min_plays": 500,
+        "max_rd": 80,
+        "max_plies": 12,
+        "count": 1000,
+        "seed": 20261014
+      },
+      "remaining": {
+        "themes": 1723509,
+        "rating": 634985,
+        "popularity": 479440,
+        "plays": 271661,
+        "rd": 203308,
+        "plies": 203308,
+        "fits_256": 203308
+      },
+      "created": "2026-10-14T09:26:19+09:00"
+    },
+    "hanging_r1000-1500.txt": {
+      "file": "hanging_r1000-1500.txt",
+      "count": 1000,
+      "args": {
+        "themes": [
+          "hangingPiece"
+        ],
+        "rating_min": 1000,
+        "rating_max": 1500,
+        "min_popularity": 80,
+        "min_plays": 500,
+        "max_rd": 80,
+        "max_plies": 12,
+        "count": 1000,
+        "seed": 20261014
+      },
+      "remaining": {
+        "themes": 224023,
+        "rating": 67519,
+        "popularity": 51312,
+        "plays": 32627,
+        "rd": 26147,
+        "plies": 26142,
+        "fits_256": 26142
+      },
+      "created": "2026-10-14T09:26:26+09:00"
+    },
+    "forkpin_r1000-1500.txt": {
+      "file": "forkpin_r1000-1500.txt",
+      "count": 1000,
+      "args": {
+        "themes": [
+          "fork",
+          "pin"
+        ],
+        "rating_min": 1000,
+        "rating_max": 1500,
+        "min_popularity": 80,
+        "min_plays": 500,
+        "max_rd": 80,
+        "max_plies": 12,
+        "count": 1000,
+        "seed": 20261014
+      },
+      "remaining": {
+        "themes": 1134097,
+        "rating": 426745,
+        "popularity": 349052,
+        "plays": 225732,
+        "rd": 180222,
+        "plies": 180211,
+        "fits_256": 180211
+      },
+      "created": "2026-10-14T09:26:33+09:00"
+    },
+    "endgame_r1000-1500.txt": {
+      "file": "endgame_r1000-1500.txt",
+      "count": 1000,
+      "args": {
+        "themes": [
+          "endgame"
+        ],
+        "rating_min": 1000,
+        "rating_max": 1500,
+        "min_popularity": 80,
+        "min_plays": 500,
+        "max_rd": 80,
+        "max_plies": 12,
+        "count": 1000,
+        "seed": 20261014
+      },
+      "remaining": {
+        "themes": 3090839,
+        "rating": 1016150,
+        "popularity": 814038,
+        "plays": 490722,
+        "rd": 378569,
+        "plies": 378259,
+        "fits_256": 378259
+      },
+      "created": "2026-10-14T09:26:41+09:00"
+    }
+  },
+  "source": {
+    "file": "lichess_db_puzzle.csv.zst",
+    "url": "https://database.lichess.org/lichess_db_puzzle.csv.zst",
+    "license": "CC0",
+    "sha256": "76335bfa7d7c4a7f93c1366d81549e53951ebb79dd43d34904cab8f22d962f8d",
+    "last_modified": "Fri, 02 Oct 2026 08:51:45 GMT",
+    "rows": 6157341
+  },
+  "overlap": {
+    "puzzles_in_multiple_sets": 1,
+    "by_sets": {
+      "endgame_r1000-1500.txt + forkpin_r1000-1500.txt": 1
+    }
+  },
+  "updated": "2026-10-14T09:26:41+09:00"
+}
