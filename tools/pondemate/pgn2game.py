@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Converts PGN games into PondeMate game files for the game viewer.
 
-    pgn2game.py [--out DIR] [--orient w|b | --player NAME] game.pgn...
+    pgn2game.py [--out DIR] [--orient w|b | --player NAME [--player NAME ...]] game.pgn...
 
 Only the main line is kept; variations and comments are dropped. Each output
 file is <PGN file name>.txt, ASCII, every line exactly 128 bytes (127 bytes
@@ -13,8 +13,8 @@ padded with spaces, then '\\n'):
 
 eval is lichess's [%eval ...] copied as written ("-0.76", "#-3"); mark is the
 move's annotation (? ?? ?! ! !! !?). Either is "-" when absent. Orientation is
-"w" (white at the bottom) unless --orient says otherwise, or --player names the
-player and that name is Black.
+"w" (white at the bottom) unless --orient says otherwise, or one of the
+--player names (exact, case-sensitive) is Black.
 
 Games that are not Standard chess, PGN that does not parse, and lines that do
 not fit 128 bytes are reported and skipped; nothing is truncated except player
@@ -83,7 +83,7 @@ def move_mark(node):
 def orientation(game, args):
     if args.orient:
         return args.orient
-    if args.player and game.headers.get("Black", "") == args.player:
+    if args.player and game.headers.get("Black", "") in args.player:
         return "b"
     return "w"
 
@@ -148,7 +148,9 @@ def main():
                         help="output directory (default ~/work/pondemate-data/games)")
     side = parser.add_mutually_exclusive_group()
     side.add_argument("--orient", choices=["w", "b"], help="side at the bottom of the board")
-    side.add_argument("--player", help="your name in the PGN; the board starts with your side at the bottom")
+    side.add_argument("--player", action="append",
+                      help="your name in the PGN (repeat for several accounts, case-sensitive); "
+                           "the board starts with your side at the bottom")
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)

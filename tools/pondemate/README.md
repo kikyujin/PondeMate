@@ -91,14 +91,14 @@ Turns PGN games into the fixed-width files the game viewer reads from
 ```sh
 uv pip install --python venv/bin/python chess      # or: venv/bin/pip install chess
 venv/bin/python <repo>/tools/pondemate/pgn2game.py games/*.pgn               # -> ~/work/pondemate-data/games/
-venv/bin/python <repo>/tools/pondemate/pgn2game.py --player <your name> --out <dir> games/*.pgn
+venv/bin/python <repo>/tools/pondemate/pgn2game.py --player <name> [--player <other name> ...] --out <dir> games/*.pgn
 ```
 
 | Argument | Default | Meaning |
 |---|---|---|
 | `--out` | `~/work/pondemate-data/games` | Output directory; each game becomes `<PGN file name>.txt` |
 | `--orient w\|b` | `w` | Side at the bottom when the game opens |
-| `--player NAME` | - | Instead of `--orient`: `b` when NAME is the game's Black, else `w` |
+| `--player NAME` | - | Instead of `--orient`, repeatable (one per account): `b` when any NAME is exactly the game's Black (case-sensitive), else `w` |
 
 One game per PGN file, main line only: variations and comments are dropped,
 lichess's `[%eval ...]` and the move annotations (`?`, `??`, `?!`, `!`, `!!`,
