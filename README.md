@@ -5,7 +5,8 @@ Chess puzzle firmware for the **XTEINK X3** e-ink reader — a fork of
 
 PondeMate adds a puzzle player to CrossPoint: pick a set of lichess puzzles from
 the SD card, move pieces with a cursor that snaps to legal choices, and keep
-going until the set is done. Everything else in CrossPoint (the reader, Wi-Fi
+going until the set is done. A game viewer steps through your own games,
+converted from PGN. Everything else in CrossPoint (the reader, Wi-Fi
 transfer, settings) is still there. CrossPoint's own README is kept at
 [docs/CROSSPOINT_README.md](docs/CROSSPOINT_README.md).
 
@@ -36,11 +37,13 @@ Screenshots are from the CrossPoint simulator (2× scale), not photos of the dev
   Resume / Hint (shows which piece to move, not where) / Skip / Sets.
 - **Progress and log** — each set remembers the next puzzle; every solved or
   skipped puzzle is appended to `/pondemate/log.txt` with mistakes and hints.
-- **Game viewer** — `Games` in the set picker lists the newest 20 games in
-  `/pondemate/games/` (converted from PGN by `tools/pondemate/pgn2game.py`) and
-  steps through one move at a time, with lichess's evaluation and move marks
-  (`12. Nf3?  -0.76  (23/58)`). Down/Up step one move, Right/Left (side keys)
-  jump to the last/first, OK flips the board, Back returns to the list.
+- **Game viewer** (on `main`; not in the v0.1.0 release) — `Games` in the set
+  picker lists the newest 20 games in `/pondemate/games/` (converted from PGN by
+  `tools/pondemate/pgn2game.py`) and steps through them on the puzzle board,
+  with lichess's evaluation and move marks (`12. Nf3?  -0.76  (23/58)`). Next
+  and Previous step one move; presses made while the screen is still refreshing
+  are not lost but added up and applied together. First / Last jump to either
+  end and Flip turns the board over, both with a half refresh (about 2 s).
 - **Two button layouts** — standard, or hjkl (front buttons as h/j/k/l).
 - **Board shading** — dark squares at 25% (default) or 50% dither.
 - Screen changes use a half refresh so the previous screen does not linger.
@@ -64,6 +67,17 @@ In the set picker, Up/Down choose a row and OK opens it. Below the sets,
 `Buttons` (standard / hjkl), `Debug: dither 25% / 50%`,
 `Debug: reset progress` (asks for confirmation; clears every set's progress,
 keeps `log.txt`) and `Debug: perft` (move-generator self test).
+
+In the game viewer:
+
+| Action | Standard | hjkl |
+|---|---|---|
+| Next move | Front 4 (Down) | j |
+| Previous move | Front 3 (Up) | k |
+| Last move | Side, right | l |
+| First position | Side, left | h |
+| Flip the board | Front 2 (OK) | Side, left (OK) |
+| Back to the list | Front 1 (Back) | Side, right (Back) |
 
 ## SD card layout
 
@@ -102,6 +116,9 @@ builds have only the first five columns.)
      ```
 4. Unzip `pondemate-v0.1.0-sdcard.zip` to the root of the SD card, so that the
    card has `/pondemate/sets/*.txt`.
+
+The game viewer is newer than v0.1.0: build `main` (see [Building](#building)) to
+try it, and copy your converted games to `/pondemate/games/` on the SD card.
 
 **USB-locked devices:** some X3 units sold by third-party stores ship with USB
 flashing locked. CrossPoint's README describes an unlocker tool; PondeMate has

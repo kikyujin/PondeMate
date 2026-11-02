@@ -47,8 +47,8 @@ constexpr char kStartFen[] = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq
 
 void testHeader() {
   pondemate::GameHeader h;
-  expect(header("#\tmkida\tlichess AI level 3\t0-1\t2026.09.12\t82\tw", h), "header: good line");
-  expect(strcmp(h.white, "mkida") == 0 && strcmp(h.black, "lichess AI level 3") == 0, "header: names");
+  expect(header("#\tAlice\tlichess AI level 3\t0-1\t2026.09.12\t82\tw", h), "header: good line");
+  expect(strcmp(h.white, "Alice") == 0 && strcmp(h.black, "lichess AI level 3") == 0, "header: names");
   expect(strcmp(h.result, "0-1") == 0 && strcmp(h.date, "2026.09.12") == 0, "header: result, date");
   expect(h.plies == 82 && h.whiteAtBottom, "header: plies, orientation w");
   expect(header("#\ta\tb\t1/2-1/2\t?\t0\tb", h) && !h.whiteAtBottom && h.plies == 0, "header: orientation b, 0 plies");
