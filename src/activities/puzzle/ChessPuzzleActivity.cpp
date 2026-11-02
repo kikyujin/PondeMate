@@ -759,7 +759,8 @@ void ChessPuzzleActivity::handleGameList(const Action action) {
 }
 
 // Down/Up step one ply and stop at the ends, Right/Left jump to the last/first, OK flips the board
-// for as long as the game stays open.
+// for as long as the game stays open. A step uses FAST; a flip or a jump redraws most of the board,
+// which FAST leaves ghosted, so those use HALF.
 void ChessPuzzleActivity::handleGame(const Action action) {
   if (action == Action::Back) {
     mode = Mode::GameList;
@@ -785,6 +786,7 @@ void ChessPuzzleActivity::handleGame(const Action action) {
       break;
     case Action::Ok:
       gameWhiteAtBottom = !gameWhiteAtBottom;
+      halfRefreshPending = true;
       return;
     default:
       break;
@@ -793,8 +795,9 @@ void ChessPuzzleActivity::handleGame(const Action action) {
     screenUnchanged = true;
     return;
   }
-  // The board gives way to the error text: a different kind of screen.
-  if (!loadGamePly(target)) halfRefreshPending = true;
+  const bool jump = action == Action::Right || action == Action::Left;
+  // A failed load gives way to the error text: a different kind of screen.
+  if (!loadGamePly(target) || jump) halfRefreshPending = true;
 }
 
 // ---------------------------------------------------------------------------
