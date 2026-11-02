@@ -683,6 +683,8 @@ void ChessPuzzleActivity::openGame(const int index) {
   gameIndex = index;
   gameOk = false;
   gamePly = 0;
+  gameStepsPending = 0;
+  gameJumpPending = Action::None;
   char path[96];
   snprintf(path, sizeof(path), "%s/%s.txt", kGamesDir, gameNames[index]);
   {
@@ -758,9 +760,9 @@ void ChessPuzzleActivity::handleGameList(const Action action) {
   }
 }
 
-// Down/Up step one ply and stop at the ends, Right/Left jump to the last/first, OK flips the board
-// for as long as the game stays open. A step uses FAST; a flip or a jump redraws most of the board,
-// which FAST leaves ghosted, so those use HALF.
+// Right/Left jump to the last/first, OK flips the board for as long as the game stays open, Back
+// returns to the list. A flip or a jump redraws most of the board, which FAST leaves ghosted, so
+// those use HALF.
 void ChessPuzzleActivity::handleGame(const Action action) {
   if (action == Action::Back) {
     mode = Mode::GameList;
@@ -772,12 +774,6 @@ void ChessPuzzleActivity::handleGame(const Action action) {
   }
   int target = gamePly;
   switch (action) {
-    case Action::Down:
-      target = gamePly < gameHeader.plies ? gamePly + 1 : gamePly;
-      break;
-    case Action::Up:
-      target = gamePly > 0 ? gamePly - 1 : 0;
-      break;
     case Action::Right:
       target = gameHeader.plies;
       break;
@@ -795,9 +791,64 @@ void ChessPuzzleActivity::handleGame(const Action action) {
     screenUnchanged = true;
     return;
   }
-  const bool jump = action == Action::Right || action == Action::Left;
+  loadGamePly(target);
+  halfRefreshPending = true;
+}
+
+// Moves `delta` plies (Down presses minus Up presses), stopping at the first and last ply. Only the
+// line of the ply it lands on is read; the steps in between are never drawn. FAST, like one step.
+void ChessPuzzleActivity::stepGame(const int delta) {
+  if (!gameOk) {
+    screenUnchanged = true;
+    return;
+  }
+  int target = gamePly + delta;
+  if (target < 0) target = 0;
+  if (target > gameHeader.plies) target = gameHeader.plies;
+  if (target == gamePly) {
+    screenUnchanged = true;
+    return;
+  }
+  LOG_INF("PONDE", "game ply %d -> %d (%+d pressed)", gamePly, target, delta);
   // A failed load gives way to the error text: a different kind of screen.
-  if (!loadGamePly(target) || jump) halfRefreshPending = true;
+  if (!loadGamePly(target)) halfRefreshPending = true;
+}
+
+// Game screen input. Remembers `action` and returns true when something is waiting to be applied.
+// While a refresh holds the render lock, loop() returns instead of blocking on it, so main loop()
+// keeps polling the buttons and the presses keep adding up here.
+bool ChessPuzzleActivity::queueGameAction(const Action action) {
+  switch (action) {
+    case Action::Down:
+      if (gameStepsPending < pondemate::kMaxGamePlies) gameStepsPending++;
+      break;
+    case Action::Up:
+      if (gameStepsPending > -pondemate::kMaxGamePlies) gameStepsPending--;
+      break;
+    case Action::Left:
+    case Action::Right:
+    case Action::Ok:
+    case Action::Back:
+      gameJumpPending = action;
+      break;
+    default:
+      break;
+  }
+  return gameStepsPending != 0 || gameJumpPending != Action::None;
+}
+
+// Applies what queueGameAction() collected; called with the render lock held. A flip, jump or Back
+// wins and the steps are dropped.
+void ChessPuzzleActivity::runGameQueue() {
+  const Action jump = gameJumpPending;
+  const int steps = gameStepsPending;
+  gameJumpPending = Action::None;
+  gameStepsPending = 0;
+  if (jump != Action::None) {
+    handleGame(jump);
+  } else {
+    stepGame(steps);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -875,14 +926,23 @@ void ChessPuzzleActivity::loop() {
     return;
   }
   const Action action = readAction();
-  if (action == Action::None) return;
+  // The game screen never waits for a refresh: keys are kept and applied once the lock is free.
+  const bool gameScreen = mode == Mode::Game;
+  if (gameScreen) {
+    if (!queueGameAction(action)) return;
+  } else if (action == Action::None) {
+    return;
+  }
 
   if (mode == Mode::Picker && action == Action::Back && !confirmingReset) {
     onGoHome();
     return;
   }
+  // Cheap busy check first; the Try below still covers a refresh starting in between.
+  if (gameScreen && RenderLock::peek()) return;
   {
-    RenderLock lock(*this);
+    RenderLock lock(gameScreen ? RenderLock::Mode::Try : RenderLock::Mode::Blocking);
+    if (!lock.ownsLock()) return;
     const Mode before = mode;
     switch (mode) {
       case Mode::Picker:
@@ -902,7 +962,7 @@ void ChessPuzzleActivity::loop() {
         handleGameList(action);
         break;
       case Mode::Game:
-        handleGame(action);
+        runGameQueue();
         break;
     }
     if (mode != before) {

@@ -95,6 +95,11 @@ class ChessPuzzleActivity final : public Activity {
   uint8_t gameTo = 0;
   char gameMoveText[kLineBytes] = {};
   char gamePlayersText[kLineBytes + 2 * pondemate::kMaxNameChars] = {};
+  // Keys pressed on the game screen while a refresh holds the render lock; loop() alone touches
+  // these and applies them once the lock is free. Steps add up (Down +1, Up -1); of Flip, First,
+  // Last and Back only the latest is kept, and it wins over any steps.
+  int gameStepsPending = 0;
+  Action gameJumpPending = Action::None;
   // Set when an action left the screen as it was (a step past either end), so loop() skips the refresh.
   bool screenUnchanged = false;
 
@@ -143,6 +148,9 @@ class ChessPuzzleActivity final : public Activity {
   bool loadGamePly(int ply);
   void handleGameList(Action action);
   void handleGame(Action action);
+  void stepGame(int delta);
+  bool queueGameAction(Action action);
+  void runGameQueue();
 
   void loadPosition(int index);
   void runPerft();
