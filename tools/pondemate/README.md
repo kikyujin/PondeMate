@@ -83,6 +83,62 @@ to SAN and played. Files named `mate_*.txt` must also end in checkmate. The
 first three puzzles of each set are printed with the opponent's move and the
 solution in SAN. Exits non-zero if any puzzle fails.
 
+## pgn2game.py (game viewer files)
+
+Turns PGN games into the fixed-width files the game viewer reads from
+`/pondemate/games/` on the SD card. Needs `python-chess` in the venv.
+
+```sh
+uv pip install --python venv/bin/python chess      # or: venv/bin/pip install chess
+venv/bin/python <repo>/tools/pondemate/pgn2game.py games/*.pgn               # -> ~/work/pondemate-data/games/
+venv/bin/python <repo>/tools/pondemate/pgn2game.py --player <your name> --out <dir> games/*.pgn
+```
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `--out` | `~/work/pondemate-data/games` | Output directory; each game becomes `<PGN file name>.txt` |
+| `--orient w\|b` | `w` | Side at the bottom when the game opens |
+| `--player NAME` | - | Instead of `--orient`: `b` when NAME is the game's Black, else `w` |
+
+One game per PGN file, main line only: variations and comments are dropped,
+lichess's `[%eval ...]` and the move annotations (`?`, `??`, `?!`, `!`, `!!`,
+`!?`) are kept. Games that are not standard chess, PGN that does not parse, and
+lines that would not fit are reported and skipped (exit status 1); player names
+longer than 31 characters are cut, nothing else is.
+
+The viewer lists the 20 greatest file names, so keep the date at the start of
+the name (`2026-09-12_...`) and the newest games come first.
+
+### Game file format
+
+ASCII, every line exactly 128 bytes including the newline (spaces up to byte
+127):
+
+```
+#<TAB>White<TAB>Black<TAB>Result<TAB>Date<TAB>plies<TAB>w|b      line 0
+0<TAB>-<TAB>-<TAB>start FEN<TAB>-<TAB>-                            line 1
+ply<TAB>SAN<TAB>UCI<TAB>FEN after the move<TAB>eval<TAB>mark       line ply + 1
+```
+
+`eval` is copied as lichess wrote it (`-0.76`, `#-3`), `mark` is one
+annotation; either is `-` when absent. Ply `n` starts at byte `(n + 1) * 128`,
+so the device reads one line per move. The parser the device uses is
+`src/activities/puzzle/GameCore.{h,cpp}`.
+
+## validate_games.sh / validate_games.cpp
+
+```sh
+tools/pondemate/validate_games.sh [games_dir]    # default ~/work/pondemate-data/games
+```
+
+Builds the checker against `lib/ChessCore` and the device's `GameCore` parser.
+For each file: the size matches the header's ply count, every line parses and
+holds the right ply, every FEN parses, and from ply 1 on the UCI move is legal
+in the previous position, its SAN matches ChessCore's, and playing it gives the
+line's position (pieces, side to move, castling rights; the en passant field is
+not compared because writers differ on when to fill it). Exits non-zero if any
+game fails.
+
 ## pieces/ (piece bitmaps)
 
 `pieces/pieces.py` is the piece silhouette prototype (Pillow). `pieces/gen_header.py`
