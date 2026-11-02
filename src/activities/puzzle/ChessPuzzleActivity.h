@@ -3,31 +3,36 @@
 
 #include <cstdint>
 
+#include "GameCore.h"
 #include "PuzzleCore.h"
 #include "activities/Activity.h"
 
 // PondeMate: chess puzzles for the X3.
 // A set picker lists /pondemate/sets/*.txt; a puzzle screen lets the player
 // grab a piece and pick its destination with a cursor that snaps to legal
-// choices; a debug screen keeps the Phase 1 perft check.
+// choices; a game viewer steps through /pondemate/games/*.txt one move at a
+// time; a debug screen keeps the Phase 1 perft check.
 class ChessPuzzleActivity final : public Activity {
  public:
   enum class Layout : uint8_t { Standard, Hjkl };
   enum class Action : uint8_t { None, Up, Down, Left, Right, Ok, Back };
 
  private:
-  enum class Mode : uint8_t { Picker, Puzzle, Debug };
+  enum class Mode : uint8_t { Picker, Puzzle, Debug, GameList, Game };
   enum class Phase : uint8_t { SelectPiece, SelectDest, SelectPromo, Solved, Complete, Error };
 
   static constexpr int kMaxSets = 12;
   static constexpr int kSetNameBytes = 40;
   static constexpr int kLineBytes = 72;
+  static constexpr int kMaxGames = 20;  // the newest by name; older files are not listed
+  static constexpr int kGameNameBytes = 40;
+  static_assert(pondemate::kRecordBytes >= pondemate::kGameLineBytes, "game lines are read into recordBuf");
 
   Mode mode = Mode::Picker;
   Layout layout = Layout::Standard;
   bool darkDither50 = false;  // dark squares at 50% instead of 25%
 
-  // Set picker. Rows: the sets, then "Buttons", "Debug: dither", "Debug: reset progress",
+  // Set picker. Rows: the sets, then "Games", "Buttons", "Debug: dither", "Debug: reset progress",
   // "Debug: perft".
   char setNames[kMaxSets][kSetNameBytes] = {};
   int setTotals[kMaxSets] = {};
@@ -72,6 +77,27 @@ class ChessPuzzleActivity final : public Activity {
   char cursorText[kLineBytes] = {};
   char statusText[kLineBytes] = {};
 
+  // Game list: file names without ".txt", newest (greatest) first.
+  char gameNames[kMaxGames][kGameNameBytes] = {};
+  int gameCount = 0;
+  int gameFiles = 0;  // game files found, listed or not
+  int gameListIndex = 0;
+
+  // Game viewer. Only the current ply's line is in memory (read into recordBuf).
+  int gameIndex = 0;
+  bool gameOk = false;  // false shows "Bad game file"
+  pondemate::GameHeader gameHeader{};
+  pondemate::GameMove gameMove{};
+  chess::Position gamePosition;
+  bool gameWhiteAtBottom = true;  // flipped by OK while the game is open
+  int gamePly = 0;
+  uint8_t gameFrom = 0;
+  uint8_t gameTo = 0;
+  char gameMoveText[kLineBytes] = {};
+  char gamePlayersText[kLineBytes + 2 * pondemate::kMaxNameChars] = {};
+  // Set when an action left the screen as it was (a step past either end), so loop() skips the refresh.
+  bool screenUnchanged = false;
+
   // Debug (Phase 1 perft check).
   static constexpr int kMaxSanMoves = 16;
   static constexpr int kSanBytes = 10;  // moveToSan() needs at least 10 bytes
@@ -112,15 +138,28 @@ class ChessPuzzleActivity final : public Activity {
   void logDiag(const char* scene) const;
   void logRefresh();
 
+  void scanGames();
+  void openGame(int index);
+  bool loadGamePly(int ply);
+  void handleGameList(Action action);
+  void handleGame(Action action);
+
   void loadPosition(int index);
   void runPerft();
 
+  // Puzzle and debug boards: with `marks`, the puzzle's last move, cursor and grabbed piece.
   void drawBoard(const chess::Position& board, bool whiteAtBottom, bool marks) const;
+  // Squares are 0..63, or -1 for none: last-move corners on markFrom/markTo, the cursor frame
+  // on cursorSq, the darkened ground under heldSq.
+  void drawBoardWith(const chess::Position& board, bool whiteAtBottom, int markFrom, int markTo, int cursorSq,
+                     int heldSq) const;
   void drawHints(const char* back, const char* ok, const char* up, const char* down, const char* left,
                  const char* right, int y) const;
   void renderPicker() const;
   void renderPuzzle() const;
   void renderDebug() const;
+  void renderGameList() const;
+  void renderGame() const;
 
  public:
   explicit ChessPuzzleActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
